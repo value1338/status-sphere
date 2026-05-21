@@ -52,15 +52,12 @@ class SetupPortal {
   static esp_err_t handle_display_settings_get(httpd_req_t* request);
   static esp_err_t handle_display_settings_post(httpd_req_t* request);
 
-  static SetupPortal* instance();
-
   ConfigStore& config_store_;
   WifiManager& wifi_manager_;
   Msa2StatusClient& status_client_;
   Ui& ui_;
   const PmuManager& pmu_manager_;
   httpd_handle_t server_ = nullptr;
-  inline static SetupPortal* instance_ = nullptr;
 };
 
 }  // namespace printsphere

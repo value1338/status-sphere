@@ -19,6 +19,9 @@ struct DynLabel {
   std::string static_text;
   std::string setting_key;
   bool is_icon = false;
+  int radius = 0;
+  int start_angle = 0;
+  std::vector<lv_obj_t*> char_labels;
 };
 
 struct DynArc {

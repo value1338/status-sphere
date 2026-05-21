@@ -534,6 +534,8 @@ const I18N = {
     colorGradient:'Gradient (Farbverlauf)', thresholds:'Schwellwerte', below:'darunter',
     gradient:'Gradient', width:'Breite', height:'Höhe', strokeWidth:'Strichbreite',
     min:'Min', max:'Max', ringColor:'Ring-Farbe',
+    textRadius:'Radius', textRadiusHint:'0 = gerade, >0 = am Kreis gebogen (Abstand zur Mitte)',
+    textStartAngle:'Startwinkel',
     sf_time:'Uhrzeit', sf_date:'Datum', sf_batteryIcon:'Batterie-Icon', sf_batteryPct:'Batterie %',
     sf_wifi:'WiFi-Status', sf_ip:'IP-Adresse', sf_ap:'Setup-AP SSID', sf_uptime:'Letztes Update',
     sf_fieldcount:'Anzahl Felder',
@@ -611,6 +613,8 @@ const I18N = {
     colorGradient:'Gradient', thresholds:'Thresholds', below:'below',
     gradient:'Gradient', width:'Width', height:'Height', strokeWidth:'Stroke width',
     min:'Min', max:'Max', ringColor:'Ring color',
+    textRadius:'Radius', textRadiusHint:'0 = straight, >0 = curved along circle (distance from center)',
+    textStartAngle:'Start angle',
     sf_time:'Time', sf_date:'Date', sf_batteryIcon:'Battery icon', sf_batteryPct:'Battery %',
     sf_wifi:'WiFi status', sf_ip:'IP address', sf_ap:'Setup AP SSID', sf_uptime:'Last update',
     sf_fieldcount:'Field count',
@@ -1595,6 +1599,14 @@ function previewFontPx(size) {
 }
 
 function renderLabel(parent, el) {
+  const text = elementDisplayText(el);
+  const rad = el.radius || 0;
+
+  if (rad > 0) {
+    renderCurvedLabel(parent, el, text);
+    return;
+  }
+
   const d = document.createElement('div');
   d.className = 'el'+(el.id===selectedId?' selected':'');
   d.dataset.id = el.id;
@@ -1607,7 +1619,6 @@ function renderLabel(parent, el) {
   if (el.anchor==='middle') d.style.transform='translateX(-50%)';
   else if (el.anchor==='end') d.style.transform='translateX(-100%)';
 
-  const text = elementDisplayText(el);
   const sp = document.createElement('span');
   sp.textContent = text;
   d.appendChild(sp);
@@ -1620,6 +1631,72 @@ function renderLabel(parent, el) {
   setupLabelResize(rh, el, d);
   d.addEventListener('pointerdown', ev => { if(!ev.target.classList.contains('resize-handle')) selectElement(el.id, ev); });
   parent.appendChild(d);
+}
+
+function renderCurvedLabel(parent, el, text) {
+  const cx = dispW() / 2;
+  const cy = dispH() / 2;
+  const r = el.radius;
+  const fontSize = previewFontPx(el.fontSize);
+  const startDeg = el.startAngle || 0;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'el'+(el.id===selectedId?' selected':'');
+  wrapper.dataset.id = el.id;
+  wrapper.style.position = 'absolute';
+  wrapper.style.left = '0';
+  wrapper.style.top = '0';
+  wrapper.style.width = dispW()+'px';
+  wrapper.style.height = dispH()+'px';
+  wrapper.style.pointerEvents = 'none';
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', dispW());
+  svg.setAttribute('height', dispH());
+  svg.style.position = 'absolute';
+  svg.style.left = '0';
+  svg.style.top = '0';
+
+  const pathId = 'curve-'+el.id;
+  const defs = document.createElementNS(ns, 'defs');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('id', pathId);
+
+  const sRad = startDeg * Math.PI / 180;
+  const sweepDeg = 180;
+  const eRad = (startDeg + sweepDeg) * Math.PI / 180;
+  const sx = cx + r * Math.cos(sRad);
+  const sy = cy + r * Math.sin(sRad);
+  const ex = cx + r * Math.cos(eRad);
+  const ey = cy + r * Math.sin(eRad);
+  const largeArc = sweepDeg > 180 ? 1 : 0;
+  path.setAttribute('d', `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`);
+  defs.appendChild(path);
+  svg.appendChild(defs);
+
+  const textEl = document.createElementNS(ns, 'text');
+  textEl.setAttribute('font-size', fontSize);
+  textEl.setAttribute('font-family', el.fontFamily || 'system-ui');
+  textEl.setAttribute('font-weight', el.fontWeight || '400');
+  textEl.setAttribute('fill', el.color || '#ffffff');
+  const tp = document.createElementNS(ns, 'textPath');
+  tp.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#'+pathId);
+  if (el.anchor === 'middle') tp.setAttribute('startOffset', '50%');
+  else if (el.anchor === 'end') tp.setAttribute('startOffset', '100%');
+  tp.setAttribute('text-anchor', el.anchor === 'middle' ? 'middle' : el.anchor === 'end' ? 'end' : 'start');
+  tp.textContent = text;
+  textEl.appendChild(tp);
+  svg.appendChild(textEl);
+
+  wrapper.appendChild(svg);
+
+  const hitArea = document.createElement('div');
+  hitArea.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:all;cursor:move';
+  wrapper.appendChild(hitArea);
+
+  hitArea.addEventListener('pointerdown', ev => selectElement(el.id, ev));
+  parent.appendChild(wrapper);
 }
 
 function resolveField(el) {
@@ -2005,6 +2082,10 @@ function renderProps() {
       <div><label>Y</label><input id="p-y" type="number" value="${el.y}"></div>
     </div></div>`;
     h += centerAlignButtonsHtml();
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>${t('textRadius')}</label><input id="p-radius" type="number" value="${el.radius||0}" min="0" max="300"></div>
+      <div><label>${t('textStartAngle')}</label><input id="p-angle" type="number" value="${el.startAngle||0}" step="1"></div>
+    </div><div style="font-size:10px;color:#475569;margin-top:4px">${t('textRadiusHint')}</div></div>`;
     const pageLabelYs = curElements().filter(e => e.type === 'label').map(e => e.y).sort((a, b) => a - b);
     const pageStep = detectRowStep(pageLabelYs);
     if (pageStep != null) {
@@ -2203,6 +2284,7 @@ function applyProps(el) {
   if (el.type==='label') {
     el.text=v('p-text')??el.text; el.field=fld(); el.suffix=v('p-suffix')??el.suffix;
     el.x=n('p-x')??el.x; el.y=n('p-y')??el.y;
+    el.radius=n('p-radius')??el.radius??0; el.startAngle=n('p-angle')??el.startAngle??0;
     el.fontSize=n('p-fs')??el.fontSize; el.fontFamily=v('p-ff')??el.fontFamily;
     el.fontWeight=v('p-fw')??el.fontWeight; el.color=v('p-color')??el.color;
     el.anchor=v('p-anchor')??el.anchor; el.format=v('p-fmt')??el.format;

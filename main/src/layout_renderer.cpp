@@ -68,6 +68,52 @@ void set_label_text_if_changed(lv_obj_t* label, const char* text) {
   lv_label_set_text(label, text);
 }
 
+void layout_curved_text(lv_obj_t* parent, DynLabel& dl,
+                        const char* text, int lw, int lh) {
+  for (auto* cl : dl.char_labels) {
+    lv_obj_delete(cl);
+  }
+  dl.char_labels.clear();
+
+  if (text == nullptr || text[0] == '\0') return;
+
+  const int cx = lw / 2;
+  const int cy = lh / 2;
+  const int r = dl.radius;
+  const lv_font_t* font = lv_obj_get_style_text_font(dl.obj, 0);
+  const lv_color_t color = lv_obj_get_style_text_color(dl.obj, 0);
+
+  int char_w = lv_font_get_glyph_width(font, 'M', 0);
+  if (char_w <= 0) char_w = font->line_height / 2;
+  double angle_per_char = (static_cast<double>(char_w) + 2.0) / static_cast<double>(r);
+  double angle_per_char_deg = angle_per_char * 180.0 / M_PI;
+
+  int len = static_cast<int>(std::strlen(text));
+  double total_deg = static_cast<double>(len) * angle_per_char_deg;
+  double start = static_cast<double>(dl.start_angle) - total_deg / 2.0;
+
+  for (int i = 0; i < len; ++i) {
+    double a_deg = start + static_cast<double>(i) * angle_per_char_deg;
+    double a_rad = a_deg * M_PI / 180.0;
+    int px = cx + static_cast<int>(std::round(r * std::cos(a_rad))) - char_w / 2;
+    int py = cy + static_cast<int>(std::round(r * std::sin(a_rad))) - font->line_height / 2;
+
+    lv_obj_t* ch = lv_label_create(parent);
+    lv_obj_set_style_text_font(ch, font, 0);
+    lv_obj_set_style_text_color(ch, color, 0);
+    char buf[5] = {};
+    buf[0] = text[i];
+    lv_label_set_text(ch, buf);
+    lv_obj_set_pos(ch, px, py);
+    int rot = static_cast<int>(a_deg + 90) % 360;
+    lv_obj_set_style_transform_rotation(ch, rot * 10, 0);
+    lv_obj_set_style_transform_pivot_x(ch, char_w / 2, 0);
+    lv_obj_set_style_transform_pivot_y(ch, font->line_height / 2, 0);
+    make_input_pass_through(ch);
+    dl.char_labels.push_back(ch);
+  }
+}
+
 }  // namespace
 
 uint32_t LayoutRenderer::parse_css_color(const std::string& hex) {
@@ -276,38 +322,43 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
         const char* anchor = cjson_string(el, "anchor", "start");
         const char* font_family = cjson_string(el, "fontFamily", "Dosis");
         uint32_t color = parse_css_color(cjson_string(el, "color", "#ffffff"));
+        dl.radius = static_cast<int>(cjson_number(el, "radius", 0));
+        dl.start_angle = static_cast<int>(cjson_number(el, "startAngle", 0));
+
+        const lv_font_t* font = (std::strcmp(font_family, "MDI") == 0)
+            ? (font_size >= 35 ? &mdi_40 : &mdi_30) : pick_font(font_size);
+        if (std::strcmp(font_family, "MDI") == 0) dl.is_icon = true;
 
         lv_obj_t* label = lv_label_create(dp.page_obj);
-        if (std::strcmp(font_family, "MDI") == 0) {
-          lv_obj_set_style_text_font(label, font_size >= 35 ? &mdi_40 : &mdi_30, 0);
-          dl.is_icon = true;
-        } else {
-          lv_obj_set_style_text_font(label, pick_font(font_size), 0);
-        }
+        lv_obj_set_style_text_font(label, font, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
 
-        if (std::strcmp(anchor, "middle") == 0) {
-          lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_align(label, LV_ALIGN_TOP_MID, x - (layout_width() / 2), y);
-        } else if (std::strcmp(anchor, "end") == 0) {
-          // x = rechte Kante (wie Editor: left + translateX(-100%)), nicht Label-Breite
-          lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);
-          lv_obj_align(label, LV_ALIGN_TOP_RIGHT, x - layout_width(), y);
+        if (dl.radius > 0) {
+          lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+          dl.obj = label;
         } else {
-          lv_obj_set_pos(label, x, y);
-        }
+          if (std::strcmp(anchor, "middle") == 0) {
+            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_align(label, LV_ALIGN_TOP_MID, x - (layout_width() / 2), y);
+          } else if (std::strcmp(anchor, "end") == 0) {
+            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_obj_align(label, LV_ALIGN_TOP_RIGHT, x - layout_width(), y);
+          } else {
+            lv_obj_set_pos(label, x, y);
+          }
 
-        lv_label_set_text(label, translate_static(dl.static_text.c_str()));
+          lv_label_set_text(label, translate_static(dl.static_text.c_str()));
 
-        if (!dl.setting_key.empty() || dl.field == "_wifi") {
-          lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-          lv_obj_set_ext_click_area(label, 15);
-          lv_obj_add_event_cb(label, &LayoutRenderer::setting_click_cb,
-                              LV_EVENT_SHORT_CLICKED, this);
-        } else {
-          make_input_pass_through(label);
+          if (!dl.setting_key.empty() || dl.field == "_wifi") {
+            lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(label, 15);
+            lv_obj_add_event_cb(label, &LayoutRenderer::setting_click_cb,
+                                LV_EVENT_SHORT_CLICKED, this);
+          } else {
+            make_input_pass_through(label);
+          }
+          dl.obj = label;
         }
-        dl.obj = label;
 
       } else if (std::strcmp(type, "arc") == 0) {
         if (arc_idx >= static_cast<int>(dp.arcs.size())) continue;
@@ -462,6 +513,12 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
         // handled in update_settings
       } else {
         set_label_text_if_changed(dl.obj, translate_static(dl.static_text.c_str()));
+      }
+
+      if (dl.radius > 0) {
+        const char* cur = lv_label_get_text(dl.obj);
+        layout_curved_text(lv_obj_get_parent(dl.obj), dl,
+                           cur, layout_width(), layout_height());
       }
     }
 

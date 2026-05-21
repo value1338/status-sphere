@@ -15,6 +15,7 @@ namespace {
 constexpr char kTag[] = "printsphere.time";
 
 bool g_sntp_started = false;
+bool g_clock_synced = false;
 std::string g_current_iana{};
 
 struct TzEntry {
@@ -150,7 +151,15 @@ void start_sntp_if_needed() {
 }
 
 bool is_clock_synced() {
-  return g_sntp_started && esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
+  if (g_clock_synced) {
+    return true;
+  }
+  if (g_sntp_started && esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+    g_clock_synced = true;
+    ESP_LOGI(kTag, "Clock synchronized via SNTP");
+    return true;
+  }
+  return false;
 }
 
 }  // namespace printsphere::time_sync

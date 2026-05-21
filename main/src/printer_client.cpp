@@ -1,0 +1,2921 @@
+#include "printsphere/printer_client.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <inttypes.h>
+#include <utility>
+
+#include "cJSON.h"
+#include "printsphere/bambu_status.hpp"
+#include "printsphere/error_lookup.hpp"
+#include "printsphere/status_resolver.hpp"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+#include "lwip/sockets.h"
+
+namespace printsphere {
+
+namespace {
+
+constexpr char kTag[] = "printsphere.printer";
+
+// Lookup table: tray_info_idx → human-readable filament product name.
+// Bambu-branded entries have the "Bambu " prefix stripped for compact display.
+struct FilamentEntry { const char* idx; const char* name; };
+static constexpr FilamentEntry kFilamentNames[] = {
+    {"GFA00", "PLA Basic"},
+    {"GFA01", "PLA Matte"},
+    {"GFA02", "PLA Metal"},
+    {"GFA05", "PLA Silk"},
+    {"GFA06", "PLA Silk+"},
+    {"GFA07", "PLA Marble"},
+    {"GFA08", "PLA Sparkle"},
+    {"GFA09", "PLA Tough"},
+    {"GFA11", "PLA Aero"},
+    {"GFA12", "PLA Glow"},
+    {"GFA13", "PLA Dynamic"},
+    {"GFA15", "PLA Galaxy"},
+    {"GFA16", "PLA Wood"},
+    {"GFA50", "PLA-CF"},
+    {"GFB00", "ABS"},
+    {"GFB01", "ASA"},
+    {"GFB02", "ASA-Aero"},
+    {"GFB50", "ABS-GF"},
+    {"GFB51", "ASA-CF"},
+    {"GFB60", "PolyLite ABS"},
+    {"GFB61", "PolyLite ASA"},
+    {"GFB98", "Generic ASA"},
+    {"GFB99", "Generic ABS"},
+    {"GFC00", "PC"},
+    {"GFC01", "PC FR"},
+    {"GFC99", "Generic PC"},
+    {"GFG00", "PETG Basic"},
+    {"GFG01", "PETG Translucent"},
+    {"GFG02", "PETG HF"},
+    {"GFG50", "PETG-CF"},
+    {"GFG60", "PolyLite PETG"},
+    {"GFG96", "Generic PETG HF"},
+    {"GFG97", "Generic PCTG"},
+    {"GFG98", "Generic PETG-CF"},
+    {"GFG99", "Generic PETG"},
+    {"GFL00", "PolyLite PLA"},
+    {"GFL01", "PolyTerra PLA"},
+    {"GFL03", "eSUN PLA+"},
+    {"GFL04", "Overture PLA"},
+    {"GFL05", "Overture Matte PLA"},
+    {"GFL50", "Fiberon PA6-CF"},
+    {"GFL51", "Fiberon PA6-GF"},
+    {"GFL52", "Fiberon PA12-CF"},
+    {"GFL53", "Fiberon PA612-CF"},
+    {"GFL54", "Fiberon PET-CF"},
+    {"GFL55", "Fiberon PETG-rCF"},
+    {"GFL95", "Generic PLA HS"},
+    {"GFL96", "Generic PLA Silk"},
+    {"GFL98", "Generic PLA-CF"},
+    {"GFL99", "Generic PLA"},
+    {"GFN03", "PA-CF"},
+    {"GFN04", "PAHT-CF"},
+    {"GFN05", "PA6-CF"},
+    {"GFN06", "PPA-CF"},
+    {"GFN08", "PA6-GF"},
+    {"GFN96", "Generic PPA-GF"},
+    {"GFN97", "Generic PPA-CF"},
+    {"GFN98", "Generic PA-CF"},
+    {"GFN99", "Generic PA"},
+    {"GFP95", "Generic PP-GF"},
+    {"GFP96", "Generic PP-CF"},
+    {"GFP97", "Generic PP"},
+    {"GFP98", "Generic PE-CF"},
+    {"GFP99", "Generic PE"},
+    {"GFR98", "Generic PHA"},
+    {"GFR99", "Generic EVA"},
+    {"GFS00", "Support W"},
+    {"GFS01", "Support G"},
+    {"GFS02", "Support PLA"},
+    {"GFS03", "Support PA/PET"},
+    {"GFS04", "PVA"},
+    {"GFS05", "Support PLA/PETG"},
+    {"GFS06", "Support ABS"},
+    {"GFS97", "Generic BVOH"},
+    {"GFS98", "Generic HIPS"},
+    {"GFS99", "Generic PVA"},
+    {"GFT01", "PET-CF"},
+    {"GFT02", "PPS-CF"},
+    {"GFT97", "Generic PPS"},
+    {"GFT98", "Generic PPS-CF"},
+    {"GFU00", "TPU 95A HF"},
+    {"GFU01", "TPU 95A"},
+    {"GFU02", "TPU AMS"},
+    {"GFU98", "Generic TPU AMS"},
+    {"GFU99", "Generic TPU"},
+};
+
+const char* resolve_filament_name(const char* idx) {
+  for (const auto& e : kFilamentNames) {
+    if (std::strcmp(e.idx, idx) == 0) return e.name;
+  }
+  return nullptr;
+}
+constexpr char kGetVersion[] = "{\"info\":{\"sequence_id\":\"0\",\"command\":\"get_version\"}}";
+constexpr char kPushAll[] = "{\"pushing\":{\"sequence_id\":\"0\",\"command\":\"pushall\"}}";
+constexpr char kStartPush[] = "{\"pushing\":{\"sequence_id\":\"0\",\"command\":\"start\"}}";
+constexpr uint32_t kDelayedPushallMs = 3000;
+constexpr uint32_t kInitialSyncTimeoutMs = 12000;
+// Watchdog timing: with keepalive=20s, a stalled LAN session is detected within
+// ~40s of silence. If the printer goes quiet despite a live TCP session we first
+// poke it with a start-push request (matches ha-bambulab's watchdog behaviour);
+// only if it still stays silent do we force a reconnect.
+constexpr uint32_t kNoDataProbeMs = 30000;
+constexpr uint32_t kNoDataReconnectMs = 15000;
+constexpr uint32_t kDisconnectedStallMs = 20000;
+constexpr uint32_t kRebuildDelayMs = 1500;
+constexpr size_t kMaxMqttPayloadBytes = 64U * 1024U;
+
+extern const uint8_t bambu_root_cert_start[] asm("_binary_bambu_cert_start");
+extern const uint8_t bambu_root_cert_end[] asm("_binary_bambu_cert_end");
+extern const uint8_t bambu_p2s_cert_start[] asm("_binary_bambu_p2s_250626_cert_start");
+extern const uint8_t bambu_p2s_cert_end[] asm("_binary_bambu_p2s_250626_cert_end");
+extern const uint8_t bambu_h2c_cert_start[] asm("_binary_bambu_h2c_251122_cert_start");
+extern const uint8_t bambu_h2c_cert_end[] asm("_binary_bambu_h2c_251122_cert_end");
+
+uint64_t now_ms() {
+  return static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
+}
+
+template <size_t N>
+void copy_text(std::array<char, N>* target, const std::string& value) {
+  if (target == nullptr) {
+    return;
+  }
+  strlcpy(target->data(), value.c_str(), target->size());
+}
+
+template <size_t N>
+void copy_text(std::array<char, N>* target, const char* value) {
+  if (target == nullptr) {
+    return;
+  }
+  strlcpy(target->data(), value != nullptr ? value : "", target->size());
+}
+
+template <size_t N>
+std::string text_string(const std::array<char, N>& value) {
+  return value.data();
+}
+
+template <size_t N>
+bool has_text(const std::array<char, N>& value) {
+  return value[0] != '\0';
+}
+
+bool same_temperature_c(float lhs, float rhs) {
+  return std::fabs(lhs - rhs) < 0.05f;
+}
+
+bool same_ams_tray_diag_state(const AmsTrayInfo& lhs, const AmsTrayInfo& rhs) {
+  return lhs.present == rhs.present &&
+         lhs.active == rhs.active &&
+         lhs.material_type == rhs.material_type &&
+         lhs.color_rgba == rhs.color_rgba &&
+         lhs.remain_pct == rhs.remain_pct;
+}
+
+bool parse_int_text_local(const char* text, int* value) {
+  if (text == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char* start = text;
+  while (*start != '\0' && std::isspace(static_cast<unsigned char>(*start)) != 0) {
+    ++start;
+  }
+  if (*start == '\0') {
+    return false;
+  }
+
+  const char* digits = start;
+  if (*digits == '+' || *digits == '-') {
+    ++digits;
+  }
+
+  bool all_hex = *digits != '\0';
+  size_t digit_count = 0;
+  for (const char* cursor = digits; *cursor != '\0'; ++cursor) {
+    if (std::isspace(static_cast<unsigned char>(*cursor)) != 0) {
+      break;
+    }
+    if (std::isxdigit(static_cast<unsigned char>(*cursor)) == 0) {
+      all_hex = false;
+      break;
+    }
+    ++digit_count;
+  }
+
+  const bool explicit_hex = (digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X'));
+  const int base = (explicit_hex || (all_hex && digit_count >= 8U)) ? 16 : 10;
+  char* end = nullptr;
+  const long parsed = std::strtol(start, &end, base);
+  if (end == nullptr || end == start) {
+    return false;
+  }
+
+  *value = static_cast<int>(parsed);
+  return true;
+}
+
+bool parse_uint64_text_local(const char* text, uint64_t* value) {
+  if (text == nullptr || value == nullptr) {
+    return false;
+  }
+
+  const char* start = text;
+  while (*start != '\0' && std::isspace(static_cast<unsigned char>(*start)) != 0) {
+    ++start;
+  }
+  if (*start == '\0') {
+    return false;
+  }
+
+  const char* digits = start;
+  if (*digits == '+') {
+    ++digits;
+  }
+
+  bool all_hex = *digits != '\0';
+  size_t digit_count = 0;
+  for (const char* cursor = digits; *cursor != '\0'; ++cursor) {
+    if (std::isspace(static_cast<unsigned char>(*cursor)) != 0) {
+      break;
+    }
+    if (std::isxdigit(static_cast<unsigned char>(*cursor)) == 0) {
+      all_hex = false;
+      break;
+    }
+    ++digit_count;
+  }
+
+  const bool explicit_hex = (digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X'));
+  const int base = (explicit_hex || (all_hex && digit_count >= 8U)) ? 16 : 10;
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(start, &end, base);
+  if (end == nullptr || end == start) {
+    return false;
+  }
+
+  *value = static_cast<uint64_t>(parsed);
+  return true;
+}
+
+bool json_uint64_like_local(const cJSON* item, uint64_t* value) {
+  if (item == nullptr || value == nullptr) {
+    return false;
+  }
+  if (cJSON_IsNumber(item)) {
+    if (item->valuedouble < 0.0) {
+      return false;
+    }
+    *value = static_cast<uint64_t>(item->valuedouble);
+    return true;
+  }
+  if (cJSON_IsString(item) && item->valuestring != nullptr) {
+    return parse_uint64_text_local(item->valuestring, value);
+  }
+  return false;
+}
+
+bool json_uint64_field_local(const cJSON* object, std::initializer_list<const char*> keys,
+                             uint64_t* value) {
+  if (object == nullptr || value == nullptr) {
+    return false;
+  }
+  for (const char* key : keys) {
+    const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+    if (json_uint64_like_local(item, value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int count_hms_entries_local(const cJSON* item) {
+  if (item == nullptr) {
+    return 0;
+  }
+  if (cJSON_IsArray(item)) {
+    return cJSON_GetArraySize(item);
+  }
+  if (cJSON_IsObject(item)) {
+    uint64_t direct_code = 0;
+    if (json_uint64_field_local(item, {"ecode", "hms_code", "hmsCode", "full_code", "fullCode"},
+                                &direct_code) &&
+        direct_code > 0xFFFFFFFFULL) {
+      return 1;
+    }
+    uint64_t attr = 0;
+    uint64_t code = 0;
+    if (json_uint64_field_local(item, {"attr", "hms_attr", "hmsAttr"}, &attr) &&
+        json_uint64_field_local(item, {"code", "err_code", "errCode", "alarm_code", "alarmCode"},
+                                &code)) {
+      return 1;
+    }
+    int count = 0;
+    for (const cJSON* child = item->child; child != nullptr; child = child->next) {
+      ++count;
+    }
+    return count;
+  }
+
+  if (cJSON_IsNumber(item)) {
+    return item->valueint;
+  }
+  int value = 0;
+  return parse_int_text_local(cJSON_IsString(item) ? item->valuestring : nullptr, &value) ? value : 0;
+}
+
+void append_unique_hms_code(std::vector<uint64_t>* codes, uint64_t hms_code) {
+  if (codes == nullptr || hms_code == 0) {
+    return;
+  }
+  // Filter out specific suppressed HMS codes at extraction level.
+  if (printsphere::is_hms_suppressed(hms_code)) {
+    return;
+  }
+  if (std::find(codes->begin(), codes->end(), hms_code) == codes->end()) {
+    codes->push_back(hms_code);
+  }
+}
+
+bool extract_hms_code_local(const cJSON* item, uint64_t* hms_code) {
+  if (item == nullptr || hms_code == nullptr) {
+    return false;
+  }
+
+  uint64_t direct_code = 0;
+  if (json_uint64_like_local(item, &direct_code) && direct_code > 0xFFFFFFFFULL) {
+    *hms_code = direct_code;
+    return true;
+  }
+
+  if (!cJSON_IsObject(item)) {
+    return false;
+  }
+
+  if (json_uint64_field_local(item, {"ecode", "hms_code", "hmsCode", "full_code", "fullCode"},
+                              &direct_code) &&
+      direct_code > 0xFFFFFFFFULL) {
+    *hms_code = direct_code;
+    return true;
+  }
+
+  uint64_t attr = 0;
+  uint64_t code = 0;
+  const bool have_attr = json_uint64_field_local(item, {"attr", "hms_attr", "hmsAttr"}, &attr);
+  const bool have_code = json_uint64_field_local(
+      item, {"code", "err_code", "errCode", "alarm_code", "alarmCode"}, &code);
+  if (have_attr && have_code) {
+    *hms_code = ((attr & 0xFFFFFFFFULL) << 32U) | (code & 0xFFFFFFFFULL);
+    return true;
+  }
+
+  if (json_uint64_field_local(item, {"code", "err_code", "errCode", "alarm_code", "alarmCode"},
+                              &direct_code) &&
+      direct_code > 0xFFFFFFFFULL) {
+    *hms_code = direct_code;
+    return true;
+  }
+
+  return false;
+}
+
+std::vector<uint64_t> extract_hms_codes_local(const cJSON* item) {
+  std::vector<uint64_t> codes;
+  if (item == nullptr) {
+    return codes;
+  }
+
+  if (cJSON_IsArray(item)) {
+    const int count = cJSON_GetArraySize(item);
+    for (int i = 0; i < count; ++i) {
+      uint64_t hms_code = 0;
+      if (extract_hms_code_local(cJSON_GetArrayItem(item, i), &hms_code)) {
+        append_unique_hms_code(&codes, hms_code);
+      }
+    }
+    return codes;
+  }
+
+  uint64_t direct_code = 0;
+  if (extract_hms_code_local(item, &direct_code)) {
+    append_unique_hms_code(&codes, direct_code);
+    return codes;
+  }
+
+  if (cJSON_IsObject(item)) {
+    for (const cJSON* child = item->child; child != nullptr; child = child->next) {
+      uint64_t hms_code = 0;
+      if (extract_hms_code_local(child, &hms_code)) {
+        append_unique_hms_code(&codes, hms_code);
+      }
+    }
+  }
+
+  return codes;
+}
+
+bool tick_elapsed(uint32_t start_tick, uint32_t now_tick, TickType_t duration) {
+  if (start_tick == 0) {
+    return false;
+  }
+  return static_cast<int32_t>(now_tick - start_tick) >= static_cast<int32_t>(duration);
+}
+
+void append_embedded_cert(std::string* target, const uint8_t* begin, const uint8_t* end) {
+  if (target == nullptr || begin == nullptr || end == nullptr || end <= begin) {
+    return;
+  }
+
+  size_t length = static_cast<size_t>(end - begin);
+  if (length > 0U && begin[length - 1] == '\0') {
+    --length;
+  }
+  if (length == 0U) {
+    return;
+  }
+
+  target->append(reinterpret_cast<const char*>(begin), length);
+  if (target->empty() || target->back() != '\n') {
+    target->push_back('\n');
+  }
+}
+
+const std::string& local_bambu_ca_bundle() {
+  static const std::string bundle = []() {
+    std::string certs;
+    certs.reserve(5500);
+    append_embedded_cert(&certs, bambu_root_cert_start, bambu_root_cert_end);
+    append_embedded_cert(&certs, bambu_p2s_cert_start, bambu_p2s_cert_end);
+    append_embedded_cert(&certs, bambu_h2c_cert_start, bambu_h2c_cert_end);
+    return certs;
+  }();
+  return bundle;
+}
+
+void log_heap_status(const char* context) {
+  const size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  const size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
+  const size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+  const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+  ESP_LOGI(kTag,
+           "[RAM] %s heap: internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u "
+           "psram_free=%u psram_largest=%u",
+           context != nullptr ? context : "heap",
+           static_cast<unsigned int>(internal_free),
+           static_cast<unsigned int>(internal_largest),
+           static_cast<unsigned int>(dma_free),
+           static_cast<unsigned int>(dma_largest),
+           static_cast<unsigned int>(psram_free),
+           static_cast<unsigned int>(psram_largest));
+}
+
+std::string make_client_id() {
+  char buffer[48] = {};
+  std::snprintf(buffer, sizeof(buffer), "printsphere-%08" PRIx32 "%08" PRIx32,
+                esp_random(), esp_random());
+  return buffer;
+}
+
+const char* connect_return_code_name(esp_mqtt_connect_return_code_t code) {
+  switch (code) {
+    case MQTT_CONNECTION_ACCEPTED:
+      return "accepted";
+    case MQTT_CONNECTION_REFUSE_PROTOCOL:
+      return "wrong protocol";
+    case MQTT_CONNECTION_REFUSE_ID_REJECTED:
+      return "client id rejected";
+    case MQTT_CONNECTION_REFUSE_SERVER_UNAVAILABLE:
+      return "server unavailable";
+    case MQTT_CONNECTION_REFUSE_BAD_USERNAME:
+      return "bad username";
+    case MQTT_CONNECTION_REFUSE_NOT_AUTHORIZED:
+      return "not authorized";
+    default:
+      return "unknown";
+  }
+}
+
+const char* wifi_second_channel_name(wifi_second_chan_t second) {
+  switch (second) {
+    case WIFI_SECOND_CHAN_ABOVE:
+      return "above";
+    case WIFI_SECOND_CHAN_BELOW:
+      return "below";
+    case WIFI_SECOND_CHAN_NONE:
+    default:
+      return "none";
+  }
+}
+
+const char* wifi_rssi_quality_label(int8_t rssi) {
+  if (rssi >= -55) {
+    return "excellent";
+  }
+  if (rssi >= -67) {
+    return "good";
+  }
+  if (rssi >= -75) {
+    return "fair";
+  }
+  if (rssi >= -82) {
+    return "weak";
+  }
+  return "very weak";
+}
+
+void log_wifi_link_diagnostics(const char* context) {
+  wifi_ap_record_t ap = {};
+  const esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "%s Wi-Fi link info unavailable: %s",
+             context != nullptr ? context : "MQTT", esp_err_to_name(err));
+    return;
+  }
+
+  ESP_LOGW(kTag,
+           "%s Wi-Fi link: rssi=%d dBm (%s) channel=%u second=%s",
+           context != nullptr ? context : "MQTT", static_cast<int>(ap.rssi),
+           wifi_rssi_quality_label(ap.rssi), static_cast<unsigned int>(ap.primary),
+           wifi_second_channel_name(ap.second));
+}
+
+int json_int_local(const cJSON* object, const char* key, int fallback) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (cJSON_IsNumber(item)) {
+    return item->valueint;
+  }
+  if (cJSON_IsString(item) && item->valuestring != nullptr) {
+    return std::atoi(item->valuestring);
+  }
+  return fallback;
+}
+
+float json_number_local(const cJSON* object, const char* key, float fallback) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (cJSON_IsNumber(item)) {
+    return static_cast<float>(item->valuedouble);
+  }
+  if (cJSON_IsString(item) && item->valuestring != nullptr) {
+    return static_cast<float>(std::atof(item->valuestring));
+  }
+  return fallback;
+}
+
+std::string json_string_local(const cJSON* object, const char* key,
+                              const std::string& fallback = {}) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (!cJSON_IsString(item) || item->valuestring == nullptr) {
+    return fallback;
+  }
+  return item->valuestring;
+}
+
+const cJSON* child_object_local(const cJSON* object, const char* key) {
+  if (object == nullptr || key == nullptr) {
+    return nullptr;
+  }
+  const cJSON* child = cJSON_GetObjectItemCaseSensitive(object, key);
+  return cJSON_IsObject(child) ? child : nullptr;
+}
+
+const cJSON* child_array_local(const cJSON* object, const char* key) {
+  if (object == nullptr || key == nullptr) {
+    return nullptr;
+  }
+  const cJSON* child = cJSON_GetObjectItemCaseSensitive(object, key);
+  return cJSON_IsArray(child) ? child : nullptr;
+}
+
+bool is_chamber_light_node(const std::string& node) {
+  return node == "chamber_light" || node == "chamber_light2";
+}
+
+bool is_light_mode_on(const std::string& mode) {
+  return mode == "on";
+}
+
+std::string build_ledctrl_payload(const char* node, bool on) {
+  if (node == nullptr || *node == '\0') {
+    return {};
+  }
+
+  char payload[192];
+  std::snprintf(payload, sizeof(payload),
+                "{\"system\":{\"sequence_id\":\"%u\",\"command\":\"ledctrl\","
+                "\"led_node\":\"%s\",\"led_mode\":\"%s\"}}",
+                static_cast<unsigned int>(esp_random()), node, on ? "on" : "off");
+  return payload;
+}
+
+void apply_chamber_light_report(const cJSON* object,
+                                PrinterClient::LocalPrinterRuntimeState* runtime) {
+  if (object == nullptr || runtime == nullptr) {
+    return;
+  }
+
+  const cJSON* lights_report = child_array_local(object, "lights_report");
+  if (!cJSON_IsArray(lights_report)) {
+    return;
+  }
+
+  bool seen = false;
+  bool any_on = false;
+  const int count = cJSON_GetArraySize(lights_report);
+  for (int i = 0; i < count; ++i) {
+    const cJSON* item = cJSON_GetArrayItem(lights_report, i);
+    const std::string node = json_string_local(item, "node", {});
+    if (!is_chamber_light_node(node)) {
+      continue;
+    }
+    seen = true;
+    if (is_light_mode_on(json_string_local(item, "mode", {}))) {
+      any_on = true;
+    }
+  }
+
+  if (seen) {
+    runtime->chamber_light_supported = true;
+    runtime->chamber_light_state_known = true;
+    runtime->chamber_light_on = any_on;
+  }
+}
+
+PrinterModel detect_printer_model(const cJSON* modules, PrinterModel fallback) {
+  if (!cJSON_IsArray(modules)) {
+    return fallback;
+  }
+
+  const int count = cJSON_GetArraySize(modules);
+  for (int i = 0; i < count; ++i) {
+    const cJSON* module = cJSON_GetArrayItem(modules, i);
+    if (!cJSON_IsObject(module)) {
+      continue;
+    }
+
+    const PrinterModel model =
+        bambu_model_from_product_name(json_string_local(module, "product_name",
+                                                        json_string_local(module, "productName", {})));
+    if (model != PrinterModel::kUnknown) {
+      return model;
+    }
+  }
+
+  for (int i = 0; i < count; ++i) {
+    const cJSON* module = cJSON_GetArrayItem(modules, i);
+    if (!cJSON_IsObject(module)) {
+      continue;
+    }
+
+    const std::string hw_ver = json_string_local(module, "hw_ver", {});
+    const std::string project_name = json_string_local(module, "project_name", {});
+    if (hw_ver == "AP02") {
+      return PrinterModel::kX1E;
+    }
+    if (project_name == "N1") {
+      return PrinterModel::kA1Mini;
+    }
+    if (hw_ver == "AP04") {
+      if (project_name == "C11") {
+        return PrinterModel::kP1P;
+      }
+      if (project_name == "C12") {
+        return PrinterModel::kP1S;
+      }
+    }
+    if (hw_ver == "AP05") {
+      if (project_name == "N2S") {
+        return PrinterModel::kA1;
+      }
+      if (project_name.empty()) {
+        return PrinterModel::kX1C;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+PrinterModel detect_printer_model_from_payload(const cJSON* object, PrinterModel fallback) {
+  if (!cJSON_IsObject(object)) {
+    return fallback;
+  }
+
+  const char* keys[] = {"product_name", "productName", "printer_model",
+                        "printerModel", "model",        "series"};
+  for (const char* key : keys) {
+    if (const PrinterModel model = bambu_model_from_product_name(json_string_local(object, key, {}));
+        model != PrinterModel::kUnknown) {
+      return model;
+    }
+  }
+
+  return fallback;
+}
+
+std::string extract_module_serial(const cJSON* modules, const std::string& fallback) {
+  if (!cJSON_IsArray(modules)) {
+    return fallback;
+  }
+
+  const int count = cJSON_GetArraySize(modules);
+  for (int i = 0; i < count; ++i) {
+    const cJSON* module = cJSON_GetArrayItem(modules, i);
+    if (!cJSON_IsObject(module)) {
+      continue;
+    }
+    const std::string serial =
+        json_string_local(module, "sn", json_string_local(module, "serial", {}));
+    if (!serial.empty()) {
+      return serial;
+    }
+  }
+
+  return fallback;
+}
+
+float packed_temp_current_value(int packed, float fallback) {
+  if (packed < 0) {
+    return fallback;
+  }
+  return static_cast<float>(packed & 0xFFFF);
+}
+
+float normalize_temperature_candidate(float value) {
+  if (value > static_cast<float>(0xFFFF)) {
+    return packed_temp_current_value(static_cast<int>(value), value);
+  }
+  return value;
+}
+
+struct NozzleTemperatureBundle {
+  float active = 0.0f;
+  float secondary = 0.0f;
+  int active_nozzle_index = -1;  // -1 = single nozzle, 0 = right, 1 = left (H2D)
+};
+
+int extract_active_nozzle_index(const cJSON* device) {
+  const cJSON* extruder = child_object_local(device, "extruder");
+  const int state = json_int_local(extruder, "state", 0);
+  const int total = state & 0xF;
+  if (total <= 1) return -1;  // Single nozzle — no index needed.
+  return (state >> 4) & 0xF;
+}
+
+void merge_nozzle_temp_candidates(const cJSON* info_array, int active_nozzle_index,
+                                  float* active_temp, float* secondary_temp) {
+  if (!cJSON_IsArray(info_array) || active_temp == nullptr || secondary_temp == nullptr) {
+    return;
+  }
+
+  const int count = cJSON_GetArraySize(info_array);
+  float first_temp = -1000.0f;
+  float fallback_secondary = -1000.0f;
+  for (int i = 0; i < count; ++i) {
+    const cJSON* item = cJSON_GetArrayItem(info_array, i);
+    if (!cJSON_IsObject(item)) {
+      continue;
+    }
+
+    const float temp = normalize_temperature_candidate(json_number_local(item, "temp", -1000.0f));
+    const int id = json_int_local(item, "id", -1);
+    ESP_LOGI(kTag, "[DBG] nozzle info[%d]: id=%d temp=%.1f (raw int=%d)",
+             i, id, temp, (int)temp);
+    if (temp <= -999.0f) {
+      continue;
+    }
+
+    if (first_temp < -999.0f) {
+      first_temp = temp;
+    }
+
+    if (id == active_nozzle_index) {
+      *active_temp = temp;
+    } else if (id >= 0 && *secondary_temp <= 0.0f) {
+      *secondary_temp = temp;
+    } else if (fallback_secondary < -999.0f) {
+      fallback_secondary = temp;
+    }
+  }
+
+  if (*active_temp <= 0.0f && first_temp > -999.0f) {
+    *active_temp = first_temp;
+  }
+  if (*secondary_temp <= 0.0f && fallback_secondary > -999.0f) {
+    *secondary_temp = fallback_secondary;
+  }
+}
+
+float extract_bed_temperature_c(const cJSON* print, float fallback) {
+  const cJSON* device = child_object_local(print, "device");
+  if (const cJSON* bed_info = child_object_local(child_object_local(device, "bed"), "info");
+      bed_info != nullptr) {
+    const int packed = json_int_local(bed_info, "temp", -1);
+    if (packed >= 0) {
+      return packed_temp_current_value(packed, fallback);
+    }
+  }
+
+  const int packed = json_int_local(device, "bed_temp", -1);
+  if (packed >= 0) {
+    return packed_temp_current_value(packed, fallback);
+  }
+
+  return json_number_local(print, "bed_temper", fallback);
+}
+
+float extract_chamber_temperature_c(const cJSON* print, float fallback) {
+  const cJSON* device = child_object_local(print, "device");
+  if (const cJSON* ctc_info = child_object_local(child_object_local(device, "ctc"), "info");
+      ctc_info != nullptr) {
+    const int packed = json_int_local(ctc_info, "temp", -1);
+    if (packed >= 0) {
+      return packed_temp_current_value(packed, fallback);
+    }
+  }
+
+  if (const cJSON* chamber_info = child_object_local(child_object_local(device, "chamber"), "info");
+      chamber_info != nullptr) {
+    const int packed = json_int_local(chamber_info, "temp", -1);
+    if (packed >= 0) {
+      return packed_temp_current_value(packed, fallback);
+    }
+  }
+
+  return json_number_local(print, "chamber_temper", fallback);
+}
+
+NozzleTemperatureBundle extract_nozzle_temperature_bundle(const cJSON* print, float active_fallback,
+                                                          float secondary_fallback) {
+  NozzleTemperatureBundle bundle{active_fallback, secondary_fallback};
+  const float direct = json_number_local(print, "nozzle_temper", -1000.0f);
+  ESP_LOGD(kTag, "[DBG] nozzle_temper=%.1f (raw int=%d) fallback=%.1f",
+           direct, (int)direct, active_fallback);
+  if (direct > -999.0f) {
+    bundle.active = direct;
+  }
+
+  const cJSON* device = child_object_local(print, "device");
+  const cJSON* extruder = child_object_local(device, "extruder");
+  const int active_nozzle_index = extract_active_nozzle_index(device);
+  bundle.active_nozzle_index = active_nozzle_index;
+  const int merge_index = active_nozzle_index >= 0 ? active_nozzle_index : 0;
+  merge_nozzle_temp_candidates(child_array_local(child_object_local(device, "nozzle"), "info"),
+                               merge_index, &bundle.active, &bundle.secondary);
+  merge_nozzle_temp_candidates(child_array_local(extruder, "info"), merge_index,
+                               &bundle.active, &bundle.secondary);
+  ESP_LOGD(kTag, "[DBG] nozzle bundle final: active=%.1f secondary=%.1f active_nozzle_idx=%d",
+           bundle.active, bundle.secondary, active_nozzle_index);
+  return bundle;
+}
+
+// Extract tray_now override from device.extruder.info[].snow (V2 protocol).
+// P2S, H2, and newer Bambu printers send the active slot via the "snow" field
+// in device.extruder.info[] alongside (or instead of) the legacy ams.tray_now.
+// snow encoding: bits[0:7] = slot_id, bits[8:15] = ams_id.
+// ams_id == 255 means external spool (VIRTUAL_TRAY_MAIN_ID).
+// Returns the mapped tray_now value, or -1 if no snow field is present.
+int extract_extruder_snow_tray_now(const cJSON* print) {
+  const cJSON* device = child_object_local(print, "device");
+  if (device == nullptr) return -1;
+  const cJSON* extruder = child_object_local(device, "extruder");
+  if (extruder == nullptr) return -1;
+  const cJSON* info_array = cJSON_GetObjectItemCaseSensitive(extruder, "info");
+  if (!cJSON_IsArray(info_array)) return -1;
+
+  const cJSON* item = nullptr;
+  cJSON_ArrayForEach(item, info_array) {
+    const int id = json_int_local(item, "id", -1);
+    if (id != 0) continue;  // Primary extruder only.
+    const cJSON* snow_item = cJSON_GetObjectItemCaseSensitive(item, "snow");
+    if (snow_item == nullptr || !cJSON_IsNumber(snow_item)) return -1;
+
+    const int snow = snow_item->valueint;
+    const int ams_id = (snow >> 8) & 0xFF;
+    const int slot_id = snow & 0xFF;
+    ESP_LOGI(kTag, "[DIAG] extruder snow: raw=%d ams_id=%d slot_id=%d", snow, ams_id, slot_id);
+
+    if (ams_id == 255) return 254;        // External spool.
+    if (ams_id >= 128) return ams_id;     // AMS HT (single-tray).
+    return ams_id * 4 + slot_id;          // Standard AMS.
+  }
+  return -1;
+}
+
+struct LocalProgressPercent {
+  bool has_value = false;
+  float value = 0.0f;
+  bool is_download_related = false;
+};
+
+bool read_progress_percent_candidate_local(const cJSON* print, const char* const* keys,
+                                           size_t key_count, float* value) {
+  if (print == nullptr || value == nullptr) {
+    return false;
+  }
+
+  for (size_t index = 0; index < key_count; ++index) {
+    const float candidate = json_number_local(print, keys[index], -1.0f);
+    if (candidate < 0.0f) {
+      continue;
+    }
+    *value = candidate <= 1.0f ? (candidate * 100.0f) : candidate;
+    return true;
+  }
+  return false;
+}
+
+LocalProgressPercent extract_progress_percent_local(const cJSON* print,
+                                                    bool prefer_download_related) {
+  static const char* const kGenericKeys[] = {
+      "mc_percent", "percent", "progress", "task_progress", "taskProgress",
+      "print_progress", "printPercent"};
+  static const char* const kDownloadKeys[] = {
+      "gcode_file_prepare_percent", "gcodeFilePreparePercent",
+      "prepare_percent", "preparePercent",
+      "gcode_prepare_percent", "gcodePreparePercent",
+      "download_progress", "downloadProgress",
+      "model_download_progress", "modelDownloadProgress"};
+
+  LocalProgressPercent result = {};
+  const auto set_result = [&](bool download_related, float candidate) {
+    result.has_value = true;
+    result.value = candidate;
+    result.is_download_related = download_related;
+  };
+
+  float candidate = 0.0f;
+  if (prefer_download_related &&
+      read_progress_percent_candidate_local(print, kDownloadKeys,
+                                            sizeof(kDownloadKeys) / sizeof(kDownloadKeys[0]),
+                                            &candidate)) {
+    set_result(true, candidate);
+    return result;
+  }
+  if (read_progress_percent_candidate_local(print, kGenericKeys,
+                                            sizeof(kGenericKeys) / sizeof(kGenericKeys[0]),
+                                            &candidate)) {
+    set_result(false, candidate);
+    return result;
+  }
+  if (read_progress_percent_candidate_local(print, kDownloadKeys,
+                                            sizeof(kDownloadKeys) / sizeof(kDownloadKeys[0]),
+                                            &candidate)) {
+    set_result(true, candidate);
+  }
+  return result;
+}
+
+uint16_t extract_current_layer_local(const cJSON* print, uint16_t fallback) {
+  return static_cast<uint16_t>(std::max(
+      json_int_local(print, "layer_num",
+                     json_int_local(print, "current_layer",
+                                    json_int_local(print, "currentLayer", fallback))),
+      0));
+}
+
+uint16_t extract_total_layers_local(const cJSON* print, uint16_t fallback) {
+  return static_cast<uint16_t>(std::max(
+      json_int_local(print, "total_layer_num",
+                     json_int_local(print, "total_layers",
+                                    json_int_local(print, "totalLayers", fallback))),
+      0));
+}
+
+std::string extract_rtsp_url(const cJSON* print, const std::string& fallback) {
+  const cJSON* ipcam = child_object_local(print, "ipcam");
+  const std::string rtsp_url =
+      json_string_local(ipcam, "rtsp_url", json_string_local(ipcam, "rtspUrl", {}));
+  if (rtsp_url == "disable") {
+    return {};
+  }
+  if (!rtsp_url.empty()) {
+    return rtsp_url;
+  }
+  return fallback;
+}
+
+bool parse_signature_required(const cJSON* print, bool fallback) {
+  const std::string fun = json_string_local(print, "fun", {});
+  if (fun.empty()) {
+    return fallback;
+  }
+
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(fun.c_str(), &end, 16);
+  if (end == nullptr || *end != '\0') {
+    return fallback;
+  }
+
+  return (parsed & 0x20000000ULL) != 0ULL;
+}
+
+void update_local_runtime_metadata(PrinterClient::LocalPrinterRuntimeState* runtime, bool configured,
+                                   bool connected) {
+  if (runtime == nullptr) {
+    return;
+  }
+
+  runtime->local_configured = configured;
+  runtime->local_connected = connected;
+  runtime->local_capabilities = default_local_capabilities_for_model(runtime->local_model);
+  if (has_text(runtime->camera_rtsp_url)) {
+    runtime->local_capabilities.camera_rtsp = true;
+  }
+  if (runtime->local_mqtt_signature_required) {
+    runtime->local_capabilities.developer_mode_required = true;
+  }
+  runtime->local_last_update_ms = now_ms();
+}
+
+uint32_t extract_remaining_seconds(const cJSON* print) {
+  if (!cJSON_IsObject(print)) {
+    return 0U;
+  }
+
+  const int minutes = json_int_local(
+      print, "mc_remaining_time",
+      json_int_local(print, "remaining_minutes",
+                     json_int_local(print, "remainingMinutes",
+                                    json_int_local(print, "remain_time", -1))));
+  if (minutes >= 0) {
+    return static_cast<uint32_t>(minutes) * 60U;
+  }
+
+  const int seconds = json_int_local(
+      print, "remaining_seconds",
+      json_int_local(print, "remainingSeconds",
+                     json_int_local(print, "remaining_time",
+                                    json_int_local(print, "remainingTime",
+                                                   json_int_local(print, "mc_left_time", -1)))));
+  if (seconds >= 0) {
+    return static_cast<uint32_t>(seconds);
+  }
+
+  return 0U;
+}
+
+std::string lower_copy(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return value;
+}
+
+bool is_placeholder_stage_name(const std::string& stage_name) {
+  if (stage_name.empty()) {
+    return true;
+  }
+
+  const std::string lower = lower_copy(stage_name);
+  return lower == "status" || lower == "stage" || lower == "unknown";
+}
+
+bool is_active_gcode_state(const std::string& gcode_state) {
+  return gcode_state == "RUNNING" || gcode_state == "PREPARE" ||
+         gcode_state == "PAUSE" || gcode_state == "PAUSED" ||
+         gcode_state == "INIT" || gcode_state == "SLICING";
+}
+
+bool is_terminal_gcode_state(const std::string& gcode_state) {
+  return gcode_state == "FAILED" || gcode_state == "FINISH" || gcode_state == "IDLE" ||
+         gcode_state == "OFFLINE";
+}
+
+bool is_idle_stage_marker(int stage_id, const std::string& stage_name) {
+  return stage_id == -1 || stage_id == 255 || lower_copy(stage_name) == "idle";
+}
+
+bool is_meaningful_active_stage(const std::string& stage_name) {
+  if (stage_name.empty()) {
+    return false;
+  }
+
+  const std::string lower = lower_copy(stage_name);
+  return lower != "idle" && lower != "finished" && lower != "failed" &&
+         lower != "printing" && lower != "preparing" && lower != "paused" &&
+         !is_placeholder_stage_name(stage_name);
+}
+
+bool is_filament_change_stage(const std::string& stage_name) {
+  const std::string lower = lower_copy(stage_name);
+  return lower == "changing_filament" || lower == "filament_loading" ||
+         lower == "filament_unloading";
+}
+
+bool is_paused_gcode_state(const std::string& gcode_state) {
+  return bambu_status_is_paused(gcode_state);
+}
+
+bool is_fault_pause_stage(const std::string& stage_name) {
+  if (stage_name.empty()) {
+    return false;
+  }
+
+  const std::string lower = lower_copy(stage_name);
+  if (lower == "paused" || lower == "pause" || lower == "m400_pause" ||
+      lower == "paused_user" || lower == "paused_user_gcode") {
+    return false;
+  }
+
+  return lower.rfind("paused_", 0) == 0;
+}
+
+std::string resolved_stage_from_payload(const std::string& effective_gcode_state,
+                                        const std::string& payload_stage_name, int stage_id,
+                                        bool has_concrete_error) {
+  if (is_terminal_gcode_state(effective_gcode_state)) {
+    if (effective_gcode_state == "FAILED") {
+      return has_concrete_error ? "Failed" : "Stopped";
+    }
+    if (effective_gcode_state == "FINISH") {
+      return "Finished";
+    }
+    if (effective_gcode_state == "IDLE") {
+      return "Idle";
+    }
+  }
+
+  if (effective_gcode_state == "PAUSE" || effective_gcode_state == "PAUSED") {
+    // Only return a generic "Paused" if we have no meaningful stage info.
+    // Printers like A1/P1S omit the stage-name object and only provide stg_cur.
+    // Without this guard, stage_id 4/22/24 (filament change/load/unload) would be
+    // discarded because the empty payload_stage_name looks like a placeholder.
+    const std::string id_label = bambu_stage_label_from_id(stage_id);
+    const bool has_meaningful_id = stage_id != -1 && stage_id != 255 && !id_label.empty();
+    if (!has_meaningful_id &&
+        (is_placeholder_stage_name(payload_stage_name) || lower_copy(payload_stage_name) == "idle")) {
+      return "Paused";
+    }
+  }
+
+  if (!is_placeholder_stage_name(payload_stage_name)) {
+    const std::string lowered_stage = lower_copy(payload_stage_name);
+    if (lowered_stage == "idle" && is_active_gcode_state(effective_gcode_state)) {
+      return {};
+    }
+    return payload_stage_name;
+  }
+
+  if ((stage_id == -1 || stage_id == 255) && is_active_gcode_state(effective_gcode_state)) {
+    return {};
+  }
+
+  if (const std::string stage_label = bambu_stage_label_from_id(stage_id); !stage_label.empty()) {
+    return stage_label;
+  }
+
+  return bambu_default_stage_label_for_status(effective_gcode_state, has_concrete_error);
+}
+
+}  // namespace
+
+void PrinterClient::configure(PrinterConnection connection) {
+  if (connection.mqtt_username.empty()) {
+    connection.mqtt_username = "bblp";
+  }
+  {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    desired_connection_ = std::move(connection);
+  }
+  reconfigure_requested_.store(true);
+  wake_task();
+}
+
+bool PrinterClient::is_configured() const {
+  return desired_connection().is_ready();
+}
+
+bool PrinterClient::set_chamber_light(bool on) {
+  if (!mqtt_connected_.load()) {
+    return false;
+  }
+
+  chamber_light_command_on_ = on;
+  chamber_light_command_pending_ = true;
+  wake_task();
+
+  LocalPrinterRuntimeState runtime = runtime_state_copy();
+  // No pushall here — the printer sends a status update automatically when the light changes.
+  // The network task publishes the MQTT command so UI/App code never races the client handle.
+
+  runtime.chamber_light_supported = true;
+  runtime.chamber_light_state_known = true;
+  runtime.chamber_light_on = on;
+  update_local_runtime_metadata(&runtime, true, mqtt_connected_.load());
+  store_runtime_state(std::move(runtime), false);
+  publish_runtime_snapshot();
+  ESP_LOGI(kTag, "Local chamber light command queued: %s", on ? "on" : "off");
+  return true;
+}
+
+PrinterConnection PrinterClient::desired_connection() const {
+  std::lock_guard<std::mutex> lock(config_mutex_);
+  return desired_connection_;
+}
+
+esp_err_t PrinterClient::start() {
+  if (task_handle_ != nullptr) {
+    return ESP_OK;
+  }
+
+  const BaseType_t result =
+      xTaskCreate(&PrinterClient::task_entry, "printer_client", 8192, this, 5, &task_handle_);
+  return result == pdPASS ? ESP_OK : ESP_FAIL;
+}
+
+void PrinterClient::mqtt_event_handler(void* handler_args, esp_event_base_t, int32_t,
+                                       void* event_data) {
+  auto* client = static_cast<PrinterClient*>(handler_args);
+  if (client == nullptr || event_data == nullptr) {
+    return;
+  }
+
+  client->handle_mqtt_event(static_cast<esp_mqtt_event_handle_t>(event_data));
+}
+
+void PrinterClient::task_entry(void* context) {
+  static_cast<PrinterClient*>(context)->task_loop();
+}
+
+PrinterClient::LocalPrinterRuntimeState PrinterClient::runtime_state_copy() const {
+  std::lock_guard<std::mutex> lock(runtime_mutex_);
+  return runtime_state_;
+}
+
+void PrinterClient::store_runtime_state(LocalPrinterRuntimeState runtime, bool notify_task) {
+  {
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    runtime_state_ = std::move(runtime);
+  }
+  runtime_dirty_ = true;
+  if (notify_task) {
+    wake_task();
+  }
+}
+
+void PrinterClient::publish_runtime_snapshot() {
+  const LocalPrinterRuntimeState runtime = runtime_state_copy();
+  state_.set_snapshot(build_snapshot_from_runtime(runtime));
+}
+
+PrinterSnapshot PrinterClient::build_snapshot_from_runtime(
+    const LocalPrinterRuntimeState& runtime) const {
+  PrinterSnapshot snapshot;
+  snapshot.connection = runtime.connection;
+  snapshot.lifecycle = runtime.lifecycle;
+  snapshot.stage = text_string(runtime.stage);
+  snapshot.detail = text_string(runtime.detail);
+  snapshot.raw_status = text_string(runtime.raw_status);
+  snapshot.raw_stage = text_string(runtime.raw_stage);
+  snapshot.resolved_serial = text_string(runtime.resolved_serial);
+  snapshot.job_name = text_string(runtime.job_name);
+  snapshot.gcode_file = text_string(runtime.gcode_file);
+  snapshot.preview_hint = preview_hint_for(snapshot.gcode_file);
+  snapshot.camera_rtsp_url = text_string(runtime.camera_rtsp_url);
+  snapshot.progress_percent = runtime.progress_percent;
+  snapshot.progress_is_download_related = runtime.progress_is_download_related;
+  snapshot.nozzle_temp_c = runtime.nozzle_temp_c;
+  snapshot.nozzle_temp_known = runtime.nozzle_temp_c > 0.0f;
+  snapshot.bed_temp_c = runtime.bed_temp_c;
+  snapshot.bed_temp_known = runtime.bed_temp_c > 0.0f;
+  snapshot.chamber_temp_c = runtime.chamber_temp_c;
+  snapshot.chamber_temp_known = runtime.chamber_temp_c > 0.0f;
+  snapshot.secondary_nozzle_temp_c = runtime.secondary_nozzle_temp_c;
+  snapshot.secondary_nozzle_temp_known = runtime.secondary_nozzle_temp_c > 0.0f;
+  snapshot.active_nozzle_index = runtime.active_nozzle_index;
+  snapshot.chamber_light_supported = runtime.chamber_light_supported;
+  snapshot.chamber_light_state_known = runtime.chamber_light_state_known;
+  snapshot.chamber_light_on = runtime.chamber_light_on;
+  snapshot.remaining_seconds = runtime.remaining_seconds;
+  snapshot.current_layer = runtime.current_layer;
+  snapshot.total_layers = runtime.total_layers;
+  snapshot.print_error_code = runtime.print_error_code;
+  snapshot.hms_codes = runtime.hms_codes;
+  snapshot.hms_alert_count = runtime.hms_alert_count;
+  snapshot.local_configured = runtime.local_configured;
+  snapshot.local_connected = runtime.local_connected;
+  snapshot.local_last_update_ms = runtime.local_last_update_ms;
+  snapshot.local_model = runtime.local_model;
+  snapshot.local_capabilities = runtime.local_capabilities;
+  snapshot.local_mqtt_signature_required = runtime.local_mqtt_signature_required;
+  snapshot.has_error = runtime.has_error;
+  snapshot.print_active = runtime.print_active;
+  snapshot.warn_hms = runtime.warn_hms;
+  snapshot.non_error_stop = runtime.non_error_stop;
+  snapshot.show_stop_banner = runtime.show_stop_banner;
+  snapshot.hw_switch_state = runtime.hw_switch_state;
+  snapshot.tray_now = runtime.tray_now;
+  snapshot.tray_tar = runtime.tray_tar;
+  snapshot.ams_status_main = runtime.ams_status_main;
+  snapshot.ams = runtime.ams;
+  return snapshot;
+}
+
+void PrinterClient::wake_task() {
+  if (task_handle_ != nullptr) {
+    xTaskNotifyGive(task_handle_);
+  }
+}
+
+void PrinterClient::handle_mqtt_event(esp_mqtt_event_handle_t event) {
+  if (event == nullptr || client_ == nullptr || event->client != client_) {
+    return;
+  }
+
+  switch (static_cast<esp_mqtt_event_id_t>(event->event_id)) {
+    case MQTT_EVENT_CONNECTED: {
+      cancel_client_rebuild();
+      consecutive_probe_failures_ = 0;
+      consecutive_mqtt_errors_ = 0;
+      mqtt_connected_ = true;
+      session_ever_established_ = true;
+      received_payload_ = false;
+      subscription_acknowledged_ = false;
+      initial_sync_sent_ = false;
+      delayed_pushall_sent_ = false;
+      first_payload_observed_ = false;
+      initial_sync_tick_ = 0;
+      connection_state_tick_ = xTaskGetTickCount();
+      watchdog_probe_tick_ = 0;
+      last_message_tick_ = xTaskGetTickCount();
+
+      const int msg_id = esp_mqtt_client_subscribe(client_, report_topic_.c_str(), 1);
+      if (msg_id < 0) {
+        ESP_LOGW(kTag, "Failed to subscribe to %s", report_topic_.c_str());
+      } else {
+        ESP_LOGI(kTag, "Subscribed request queued for %s (msg_id=%d)", report_topic_.c_str(),
+                 msg_id);
+      }
+
+      LocalPrinterRuntimeState runtime = runtime_state_copy();
+      std::string active_host;
+      std::string active_serial;
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        active_host = active_connection_.host;
+        active_serial = active_connection_.serial;
+      }
+      runtime.connection = PrinterConnectionState::kOnline;
+      runtime.lifecycle = PrintLifecycleState::kUnknown;
+      copy_text(&runtime.raw_status, "");
+      copy_text(&runtime.raw_stage, "");
+      copy_text(&runtime.stage, "connected");
+      copy_text(&runtime.detail, "Connected to local Bambu MQTT, waiting for subscribe ack");
+      copy_text(&runtime.resolved_serial, active_serial);
+      runtime.print_error_code = 0;
+      runtime.hms_codes.clear();
+      runtime.hms_alert_count = 0;
+      runtime.has_error = false;
+      runtime.warn_hms = false;
+      runtime.print_active = false;
+      runtime.non_error_stop = false;
+      runtime.show_stop_banner = false;
+      update_local_runtime_metadata(&runtime, true, true);
+      store_runtime_state(std::move(runtime), true);
+      ESP_LOGI(kTag, "Connected to %s", active_host.c_str());
+      break;
+    }
+
+    case MQTT_EVENT_SUBSCRIBED: {
+      cancel_client_rebuild();
+      subscription_acknowledged_ = true;
+      initial_sync_sent_ = true;
+      delayed_pushall_sent_ = false;
+      initial_sync_tick_ = xTaskGetTickCount();
+      watchdog_probe_tick_ = 0;
+
+      LocalPrinterRuntimeState runtime = runtime_state_copy();
+      runtime.connection = PrinterConnectionState::kOnline;
+      runtime.lifecycle = PrintLifecycleState::kUnknown;
+      copy_text(&runtime.raw_status, "");
+      copy_text(&runtime.raw_stage, "");
+      copy_text(&runtime.stage, "subscribed");
+      copy_text(&runtime.detail, "MQTT subscribed, requesting printer sync");
+      runtime.print_error_code = 0;
+      runtime.hms_codes.clear();
+      runtime.hms_alert_count = 0;
+      runtime.has_error = false;
+      runtime.warn_hms = false;
+      runtime.print_active = false;
+      runtime.non_error_stop = false;
+      runtime.show_stop_banner = false;
+      update_local_runtime_metadata(&runtime, true, true);
+      store_runtime_state(std::move(runtime), true);
+
+      ESP_LOGI(kTag, "MQTT subscribe acknowledged (msg_id=%d), sending get_version + start",
+               event->msg_id);
+      request_initial_sync();
+      break;
+    }
+
+    case MQTT_EVENT_DISCONNECTED: {
+      mqtt_connected_ = false;
+      subscription_acknowledged_ = false;
+      initial_sync_sent_ = false;
+      delayed_pushall_sent_ = false;
+      initial_sync_tick_ = 0;
+      connection_state_tick_ = xTaskGetTickCount();
+      watchdog_probe_tick_ = 0;
+      // Grace period: preserve last-known printer state so the UI stays stable
+      // during brief reconnects. Only update connection status; the task loop will
+      // escalate to an error if reconnection takes too long (kDisconnectedStallMs).
+      LocalPrinterRuntimeState runtime = runtime_state_copy();
+      runtime.connection = PrinterConnectionState::kConnecting;
+      update_local_runtime_metadata(&runtime, true, false);
+      store_runtime_state(std::move(runtime), true);
+      ESP_LOGW(kTag, "MQTT disconnected");
+      log_wifi_link_diagnostics("MQTT disconnected");
+      break;
+    }
+
+    case MQTT_EVENT_DATA: {
+      std::string topic;
+      std::string payload;
+      if (event->total_data_len <= 0 ||
+          static_cast<size_t>(event->total_data_len) > kMaxMqttPayloadBytes) {
+        if (event->current_data_offset == 0) {
+          ESP_LOGW(kTag, "Dropping oversized MQTT payload: %d bytes", event->total_data_len);
+        }
+        std::lock_guard<std::mutex> lock(incoming_mutex_);
+        incoming_topic_.clear();
+        incoming_payload_.clear();
+        break;
+      }
+
+      {
+        std::unique_lock<std::mutex> lock(incoming_mutex_);
+        if (event->current_data_offset == 0) {
+          incoming_topic_.assign(event->topic, event->topic_len);
+          incoming_payload_.clear();
+          incoming_payload_.reserve(event->total_data_len);
+        }
+
+        incoming_payload_.append(event->data, event->data_len);
+        if (incoming_payload_.size() >= static_cast<size_t>(event->total_data_len)) {
+          topic = incoming_topic_;
+          payload = incoming_payload_;
+          incoming_topic_.clear();
+          incoming_payload_.clear();
+        }
+      }
+
+      if (!payload.empty() && topic == report_topic_) {
+        const bool first_payload = !first_payload_observed_.exchange(true);
+        if (first_payload) {
+          cancel_client_rebuild();
+          log_heap_status("Before first MQTT payload");
+        }
+        last_message_tick_ = xTaskGetTickCount();
+        watchdog_probe_tick_ = 0;
+        handle_report_payload(payload.data(), payload.size());
+        if (first_payload) {
+          log_heap_status("After first MQTT payload");
+        }
+      }
+      break;
+    }
+
+    case MQTT_EVENT_ERROR: {
+      mqtt_connected_ = false;
+      subscription_acknowledged_ = false;
+      initial_sync_sent_ = false;
+      delayed_pushall_sent_ = false;
+      initial_sync_tick_ = 0;
+      connection_state_tick_ = xTaskGetTickCount();
+      watchdog_probe_tick_ = 0;
+      log_heap_status("MQTT error");
+      log_wifi_link_diagnostics("MQTT error");
+
+      // Determine whether this is a permanent auth error or a transient transport error.
+      bool is_auth_error = false;
+      const auto* error = event->error_handle;
+      if (error != nullptr && error->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+        is_auth_error = true;
+      }
+
+      if (is_auth_error) {
+        // Auth errors: show immediately — user must fix credentials.
+        LocalPrinterRuntimeState runtime = runtime_state_copy();
+        runtime.connection = PrinterConnectionState::kError;
+        runtime.lifecycle = PrintLifecycleState::kError;
+        copy_text(&runtime.raw_status, "");
+        copy_text(&runtime.raw_stage, "");
+        copy_text(&runtime.stage, "mqtt-auth");
+        runtime.print_error_code = 0;
+        runtime.hms_codes.clear();
+        runtime.hms_alert_count = 0;
+        runtime.has_error = true;
+        runtime.warn_hms = false;
+        runtime.print_active = false;
+        runtime.non_error_stop = false;
+        runtime.show_stop_banner = false;
+
+        if (error->connect_return_code == MQTT_CONNECTION_REFUSE_NOT_AUTHORIZED) {
+          copy_text(&runtime.detail, "MQTT auth rejected; verify access code");
+        } else if (error->connect_return_code == MQTT_CONNECTION_REFUSE_BAD_USERNAME) {
+          copy_text(&runtime.detail, "MQTT username rejected");
+        } else {
+          copy_text(&runtime.detail,
+                    std::string("MQTT refused: ") +
+                        connect_return_code_name(error->connect_return_code));
+        }
+        ESP_LOGE(kTag, "MQTT refused by broker: %s",
+                 connect_return_code_name(error->connect_return_code));
+
+        update_local_runtime_metadata(&runtime, true, false);
+        store_runtime_state(std::move(runtime), true);
+      } else {
+        // Transport errors: grace period — preserve last-known state, just mark connecting.
+        // The task loop will escalate to error if reconnection stalls (kDisconnectedStallMs).
+        if (error != nullptr) {
+          if (error->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+            const int sock_err = error->esp_transport_sock_errno;
+            ESP_LOGE(kTag, "MQTT transport error: esp_err=%s tls=0x%x sock_errno=%d",
+                     esp_err_to_name(error->esp_tls_last_esp_err), error->esp_tls_stack_err,
+                     sock_err);
+          } else {
+            ESP_LOGE(kTag, "MQTT event error type=%d", static_cast<int>(error->error_type));
+          }
+        } else {
+          ESP_LOGE(kTag, "MQTT event error without details");
+        }
+        LocalPrinterRuntimeState runtime = runtime_state_copy();
+        runtime.connection = PrinterConnectionState::kConnecting;
+        update_local_runtime_metadata(&runtime, true, false);
+        store_runtime_state(std::move(runtime), true);
+      }
+
+      {
+        ++consecutive_mqtt_errors_;
+        // Growing backoff that mirrors the cloud client's escalation curve:
+        // we don't want to hammer an unreachable printer (printer powered off,
+        // away from the LAN, etc.) every 30 s — that competes with the cloud
+        // MQTT task for internal heap and prevents the cloud from refreshing
+        // its binding list (which is what eventually clears the gate).
+        const uint32_t backoff_ms =
+            consecutive_mqtt_errors_ <= 1 ? 2000U :
+            consecutive_mqtt_errors_ <= 2 ? 4000U :
+            consecutive_mqtt_errors_ <= 4 ? 8000U :
+            consecutive_mqtt_errors_ <= 6 ? 15000U :
+            consecutive_mqtt_errors_ <= 8 ? 30000U :
+            consecutive_mqtt_errors_ <= 10 ? 60000U :
+            consecutive_mqtt_errors_ <= 12 ? 120000U : 300000U;
+        schedule_client_rebuild("mqtt error", backoff_ms);
+      }
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+void PrinterClient::handle_report_payload(const char* payload, size_t length) {
+  cJSON* root = cJSON_ParseWithLength(payload, length);
+  if (root == nullptr) {
+    ESP_LOGW(kTag, "Failed to parse MQTT payload");
+    return;
+  }
+
+  const cJSON* print = cJSON_GetObjectItemCaseSensitive(root, "print");
+  if (cJSON_IsObject(print)) {
+    LocalPrinterRuntimeState runtime = runtime_state_copy();
+    std::string active_serial;
+    {
+      std::lock_guard<std::mutex> lock(config_mutex_);
+      active_serial = active_connection_.serial;
+    }
+    const std::string previous_raw_status = text_string(runtime.raw_status);
+    const std::string previous_raw_stage = text_string(runtime.raw_stage);
+    const std::string previous_stage = text_string(runtime.stage);
+    const std::string previous_detail = text_string(runtime.detail);
+    const PrintLifecycleState previous_lifecycle = runtime.lifecycle;
+    const int previous_print_error_code = runtime.print_error_code;
+    const uint16_t previous_hms_alert_count = runtime.hms_alert_count;
+    const bool previous_pause_fault = runtime.has_error && is_paused_gcode_state(previous_raw_status);
+    const bool previous_ams_change_latched = runtime.ams_filament_change_latched;
+    const int previous_hw_switch_state = runtime.hw_switch_state;
+    const int previous_tray_now = runtime.tray_now;
+    const int previous_tray_tar = runtime.tray_tar;
+    const AmsSnapshot previous_ams = runtime.ams ? *runtime.ams : AmsSnapshot{};
+    const bool had_previous_ams = runtime.ams != nullptr;
+    const std::string gcode_state = json_string(print, "gcode_state", {});
+    const std::string effective_gcode_state = !gcode_state.empty() ? gcode_state : previous_raw_status;
+    const cJSON* stage = cJSON_GetObjectItemCaseSensitive(print, "stage");
+    const int stage_id =
+        cJSON_IsObject(stage) ? json_int(stage, "_id", json_int(print, "stg_cur", -1))
+                              : json_int(print, "stg_cur", -1);
+    const std::string stage_name =
+        cJSON_IsObject(stage) ? json_string(stage, "name", json_string(stage, "stage", {})) : "";
+    const cJSON* ams_obj = cJSON_GetObjectItemCaseSensitive(print, "ams");
+    const bool has_hw_switch_state_update =
+        cJSON_GetObjectItemCaseSensitive(print, "hw_switch_state") != nullptr;
+    const int new_hw_switch_state = json_int(print, "hw_switch_state", previous_hw_switch_state);
+    const bool has_tray_now_update =
+        cJSON_IsObject(ams_obj) &&
+        cJSON_GetObjectItemCaseSensitive(ams_obj, "tray_now") != nullptr;
+    const bool has_tray_tar_update =
+        cJSON_IsObject(ams_obj) &&
+        cJSON_GetObjectItemCaseSensitive(ams_obj, "tray_tar") != nullptr;
+    const int new_tray_now = cJSON_IsObject(ams_obj)
+                                 ? json_int(ams_obj, "tray_now", previous_tray_now)
+                                 : previous_tray_now;
+    const int new_tray_tar = cJSON_IsObject(ams_obj)
+                                 ? json_int(ams_obj, "tray_tar", previous_tray_tar)
+                                 : previous_tray_tar;
+    // A1 / printers without a named stage object report filament-change state via ams_status
+    // (high byte 0x01 = AMS_STATUS_MAIN_FILAMENT_CHANGE) while stg_cur stays at 0 (printing).
+    // Synthesize stg_cur=4 (changing_filament) in that case so the animation triggers.
+    const int raw_ams_status = json_int(print, "ams_status", -1);
+    const int ams_status_main = (raw_ams_status >= 0) ? ((raw_ams_status >> 8) & 0xFF) : -1;
+    const bool ams_filament_change = ams_status_main == 0x01;
+    // Latch AMS filament-change flag across partial MQTT updates.
+    // Set when we see explicit ams_status with high byte 0x01 (active change/purge/wipe).
+    // Clear only on explicit ams_status with high byte != 0x01 (e.g. 0x0300 = done).
+    // Absent ams_status (field not in JSON → -1) does not touch the latch.
+    if (raw_ams_status >= 0) {
+      runtime.ams_filament_change_latched = ams_filament_change;
+      runtime.ams_status_main = ams_status_main;
+    }
+    const bool ams_change_active = runtime.ams_filament_change_latched;
+    const bool stage_id_generic = (stage_id == 0 || stage_id == -1 || stage_id == 255);
+    const int effective_stage_id = (ams_change_active && stage_id_generic) ? 4 : stage_id;
+    const cJSON* print_error_item = cJSON_GetObjectItemCaseSensitive(print, "print_error");
+    const bool has_print_error_update = print_error_item != nullptr;
+    const int print_error_code =
+        has_print_error_update ? json_int(print, "print_error", runtime.print_error_code)
+                               : runtime.print_error_code;
+    const cJSON* hms = cJSON_GetObjectItemCaseSensitive(print, "hms");
+    const bool has_hms_update = hms != nullptr;
+    const int hms_count =
+        has_hms_update ? count_hms_entries_local(hms) : static_cast<int>(runtime.hms_alert_count);
+    const std::vector<uint64_t> parsed_hms_codes =
+        has_hms_update ? extract_hms_codes_local(hms) : runtime.hms_codes;
+    const bool has_hms_alert = !parsed_hms_codes.empty();
+    const bool has_concrete_error = print_error_code != 0;
+    const std::string resolved_stage =
+        resolved_stage_from_payload(effective_gcode_state, stage_name, effective_stage_id,
+                                    has_concrete_error);
+    const bool paused_state = is_paused_gcode_state(effective_gcode_state);
+    const bool fault_pause_signal = paused_state &&
+                                    (has_concrete_error || is_fault_pause_stage(resolved_stage) ||
+                                     is_fault_pause_stage(stage_name));
+    const bool paused_fault_latched = paused_state && (fault_pause_signal || previous_pause_fault);
+    const bool stage_idle_placeholder = is_idle_stage_marker(effective_stage_id, stage_name);
+    const bool has_status_update = !gcode_state.empty();
+    const bool has_stage_update = !resolved_stage.empty();
+
+    // [DIAG] Log incoming local MQTT print payload only when it carries a real state change.
+    const bool diag_has_state_fields = !gcode_state.empty() || stage_id >= 0 ||
+                                       !stage_name.empty() || raw_ams_status >= 0 ||
+                                       has_hw_switch_state_update || has_tray_now_update ||
+                                       has_tray_tar_update;
+    const bool diag_has_state_change =
+        (!gcode_state.empty() && gcode_state != previous_raw_status) ||
+        (!stage_name.empty() && stage_name != previous_raw_stage) ||
+        (raw_ams_status >= 0 && ams_filament_change != previous_ams_change_latched) ||
+        (has_hw_switch_state_update && new_hw_switch_state != previous_hw_switch_state) ||
+        (has_tray_now_update && new_tray_now != previous_tray_now) ||
+        (has_tray_tar_update && new_tray_tar != previous_tray_tar);
+    if (diag_has_state_fields && diag_has_state_change) {
+      ESP_LOGI(kTag, "[DIAG] local mqtt: gcode=%s stg_cur=%d stage_name=%s ams_status=0x%04X "
+               "ams_change=%d(latch=%d) hw_switch=%d tray_now=%d tray_tar=%d",
+               gcode_state.empty() ? "(-)" : gcode_state.c_str(), stage_id,
+               stage_name.empty() ? "(-)" : stage_name.c_str(),
+               raw_ams_status, ams_filament_change ? 1 : 0,
+               ams_change_active ? 1 : 0,
+               new_hw_switch_state, new_tray_now, new_tray_tar);
+    }
+
+    runtime.connection = PrinterConnectionState::kOnline;
+    const bool payload_download_stage =
+        is_download_stage(!resolved_stage.empty() ? resolved_stage : stage_name,
+                          effective_gcode_state);
+    const bool prefer_download_progress =
+        payload_download_stage ||
+        previous_lifecycle == PrintLifecycleState::kPreparing ||
+        runtime.progress_is_download_related;
+    const LocalProgressPercent progress_update =
+        extract_progress_percent_local(print, prefer_download_progress);
+    const bool has_progress_update = progress_update.has_value;
+    const bool progress_is_download_related = progress_update.is_download_related;
+    if (has_progress_update) {
+      runtime.progress_percent = progress_update.value;
+      runtime.progress_is_download_related = progress_is_download_related;
+    }
+    const NozzleTemperatureBundle nozzle_temps =
+        extract_nozzle_temperature_bundle(print, runtime.nozzle_temp_c,
+                                          runtime.secondary_nozzle_temp_c);
+    runtime.nozzle_temp_c = nozzle_temps.active;
+    runtime.secondary_nozzle_temp_c = nozzle_temps.secondary;
+    if (nozzle_temps.active_nozzle_index >= 0) {
+      runtime.active_nozzle_index = nozzle_temps.active_nozzle_index;
+    }
+    runtime.bed_temp_c = extract_bed_temperature_c(print, runtime.bed_temp_c);
+    runtime.chamber_temp_c = extract_chamber_temperature_c(print, runtime.chamber_temp_c);
+    runtime.current_layer = extract_current_layer_local(print, runtime.current_layer);
+    runtime.total_layers = extract_total_layers_local(print, runtime.total_layers);
+    runtime.local_model = detect_printer_model_from_payload(print, runtime.local_model);
+    runtime.chamber_light_supported =
+        runtime.chamber_light_supported || printer_model_has_chamber_light(runtime.local_model);
+    copy_text(&runtime.camera_rtsp_url,
+              extract_rtsp_url(print, text_string(runtime.camera_rtsp_url)));
+    runtime.local_mqtt_signature_required =
+        parse_signature_required(print, runtime.local_mqtt_signature_required);
+    apply_chamber_light_report(print, &runtime);
+    if (!has_text(runtime.resolved_serial)) {
+      copy_text(&runtime.resolved_serial, active_serial);
+    }
+
+    // Parse hw_switch_state (extruder filament sensor: 0=no filament, 1=filament present).
+    const int new_hw_switch = new_hw_switch_state;
+    if (new_hw_switch != runtime.hw_switch_state) {
+      ESP_LOGI(kTag, "hw_switch_state: %d -> %d", runtime.hw_switch_state, new_hw_switch);
+      runtime.hw_switch_state = new_hw_switch;
+    }
+
+    // Parse tray_now / tray_tar from ams object.
+    // tray_now encoding: 255=none, 254=external spool, else ams_index*4+tray_index.
+    if (ams_obj != nullptr) {
+      int effective_tray_now = json_int(ams_obj, "tray_now", runtime.tray_now);
+      const int new_tray_tar = json_int(ams_obj, "tray_tar", runtime.tray_tar);
+
+      // V2 protocol override: P2S/H2 series send device.extruder.info[].snow which is
+      // the authoritative source for the active tray on newer printers.  Map it back to
+      // legacy tray_now encoding so all downstream ext-spool / AMS-tray logic works.
+      const int snow_tray = extract_extruder_snow_tray_now(print);
+      if (snow_tray >= 0 && snow_tray != effective_tray_now) {
+        ESP_LOGI(kTag, "tray_now override from snow: ams.tray_now=%d -> snow=%d",
+                 effective_tray_now, snow_tray);
+        effective_tray_now = snow_tray;
+      }
+
+      if (effective_tray_now != runtime.tray_now || new_tray_tar != runtime.tray_tar) {
+        ESP_LOGI(kTag, "tray: now=%d->%d tar=%d->%d",
+                 runtime.tray_now, effective_tray_now, runtime.tray_tar, new_tray_tar);
+        runtime.tray_now = effective_tray_now;
+        runtime.tray_tar = new_tray_tar;
+      }
+
+      // Parse per-unit AMS tray data: material, color, humidity, temperature.
+      const cJSON* ams_array = cJSON_GetObjectItemCaseSensitive(ams_obj, "ams");
+      if (ams_array != nullptr && cJSON_IsArray(ams_array)) {
+        if (!runtime.ams) runtime.ams = std::make_shared<AmsSnapshot>();
+        uint8_t unit_count = 0;
+        const cJSON* ams_unit = nullptr;
+        cJSON_ArrayForEach(ams_unit, ams_array) {
+          const int unit_id = json_int(ams_unit, "id", -1);
+          if (unit_id < 0 || unit_id >= kMaxAmsUnits) continue;
+          AmsUnitInfo& unit = runtime.ams->units[unit_id];
+          unit.present = true;
+          if (unit_id >= unit_count) unit_count = unit_id + 1;
+
+          const int humidity_raw = json_int(ams_unit, "humidity_raw", -1);
+          if (humidity_raw >= 0 && humidity_raw <= 100) {
+            unit.humidity_pct = humidity_raw;
+          } else {
+            // Fallback: convert 1-5 index to approximate percentage
+            const int humidity_idx = json_int(ams_unit, "humidity", -1);
+            if (humidity_idx >= 1 && humidity_idx <= 5) {
+              static constexpr int kHumApprox[] = {10, 30, 48, 63, 85};
+              unit.humidity_pct = kHumApprox[humidity_idx - 1];
+            }
+          }
+
+          const float temp = json_number(ams_unit, "temp", -999.0f);
+          if (temp >= 0.0f && temp <= 100.0f) unit.temperature_c = temp;
+
+          const cJSON* tray_array = cJSON_GetObjectItemCaseSensitive(ams_unit, "tray");
+          if (tray_array != nullptr && cJSON_IsArray(tray_array)) {
+            const cJSON* tray_obj = nullptr;
+            cJSON_ArrayForEach(tray_obj, tray_array) {
+              const int tray_id = json_int(tray_obj, "id", -1);
+              if (tray_id < 0 || tray_id >= kMaxAmsTrays) continue;
+              AmsTrayInfo& tray = unit.trays[tray_id];
+
+              // Detect empty tray: payload with only "id" (and optionally "state").
+              const int field_count = cJSON_GetArraySize(tray_obj);
+              const bool has_only_metadata =
+                  field_count <= 2 &&
+                  cJSON_GetObjectItemCaseSensitive(tray_obj, "id") != nullptr &&
+                  cJSON_GetObjectItemCaseSensitive(tray_obj, "tray_type") == nullptr;
+              if (has_only_metadata) {
+                tray.present = false;
+                tray.material_type.clear();
+                tray.material_name.clear();
+                tray.color_rgba = 0;
+                tray.remain_pct = -1;
+                tray.active = false;
+                continue;
+              }
+
+              tray.present = true;
+              const std::string tray_type = json_string(tray_obj, "tray_type", tray.material_type);
+              if (!tray_type.empty()) tray.material_type = tray_type;
+              const std::string sub_brands = json_string(tray_obj, "tray_sub_brands", tray.material_name);
+              if (!sub_brands.empty()) tray.material_name = sub_brands;
+              // Resolve product name from tray_info_idx when sub_brands is empty.
+              if (tray.material_name.empty()) {
+                const std::string tray_idx = json_string(tray_obj, "tray_info_idx", "");
+                if (!tray_idx.empty()) {
+                  const char* resolved = resolve_filament_name(tray_idx.c_str());
+                  if (resolved) tray.material_name = resolved;
+                }
+              }
+              const std::string color_str = json_string(tray_obj, "tray_color", "");
+              if (color_str.size() >= 6) {
+                char* end = nullptr;
+                const uint32_t rgba = static_cast<uint32_t>(std::strtoul(color_str.c_str(), &end, 16));
+                if (end != color_str.c_str()) tray.color_rgba = rgba;
+              }
+
+              const int remain = json_int(tray_obj, "remain", -1);
+              if (remain >= 0 && remain <= 100) tray.remain_pct = remain;
+
+              // Mark active based on global tray_now (which may include snow override).
+              const int global_tray_idx = unit_id * kMaxAmsTrays + tray_id;
+              tray.active = (runtime.tray_now == global_tray_idx);
+            }
+          }
+        }
+        if (unit_count > runtime.ams->count) runtime.ams->count = unit_count;
+
+        // AMS tray diagnostics — log only the unit/trays whose visible state changed.
+        const AmsUnitInfo empty_unit = {};
+        for (uint8_t u = 0; u < unit_count; ++u) {
+          const AmsUnitInfo& du = runtime.ams->units[u];
+          if (!du.present) continue;
+          const AmsUnitInfo& prev_unit =
+              (had_previous_ams && u < previous_ams.count) ? previous_ams.units[u] : empty_unit;
+          bool any_tray_changed = false;
+          for (int t = 0; t < kMaxAmsTrays; ++t) {
+            if (!same_ams_tray_diag_state(du.trays[t], prev_unit.trays[t])) {
+              any_tray_changed = true;
+              break;
+            }
+          }
+          const bool unit_summary_changed =
+              !had_previous_ams ||
+              du.present != prev_unit.present ||
+              du.humidity_pct != prev_unit.humidity_pct ||
+              !same_temperature_c(du.temperature_c, prev_unit.temperature_c);
+          if (!unit_summary_changed && !any_tray_changed) {
+            continue;
+          }
+          ESP_LOGI(kTag, "[DIAG] ams unit=%d hum=%d%% temp=%.1f°C", u,
+                   du.humidity_pct, static_cast<double>(du.temperature_c));
+          for (int t = 0; t < kMaxAmsTrays; ++t) {
+            const AmsTrayInfo& dt = du.trays[t];
+            if (had_previous_ams && same_ams_tray_diag_state(dt, prev_unit.trays[t])) {
+              continue;
+            }
+            ESP_LOGI(kTag, "[DIAG]   tray[%d] present=%d type=%s color=0x%08X remain=%d%% active=%d",
+                     t, dt.present ? 1 : 0,
+                     dt.material_type.empty() ? "(-)" : dt.material_type.c_str(),
+                     (unsigned)dt.color_rgba, dt.remain_pct, dt.active ? 1 : 0);
+          }
+        }
+      }
+
+    }
+
+    // Parse vt_tray (external / virtual tray) for external spool info.
+    // Legacy printers use "vt_tray" (object), P2S/H2 use "vir_slot" (array).
+    // Some printers place vt_tray inside the "ams" object, others as a
+    // sibling of "ams" directly under "print".  Check both locations.
+    {
+      bool parsed_ext_spool = false;
+
+      // V2 path: vir_slot is an array of virtual tray objects (P2S/H2 series).
+      // Each element has "id": "255" (main ext spool) or "254" (deputy).
+      const cJSON* vir_slot = cJSON_GetObjectItemCaseSensitive(print, "vir_slot");
+      if (vir_slot != nullptr && cJSON_IsArray(vir_slot)) {
+        const cJSON* slot_item = nullptr;
+        cJSON_ArrayForEach(slot_item, vir_slot) {
+          if (!cJSON_IsObject(slot_item)) continue;
+          const std::string slot_id = json_string(slot_item, "id", "");
+          if (slot_id != "255") continue;  // Only parse main ext spool.
+          if (!runtime.ams) runtime.ams = std::make_shared<AmsSnapshot>();
+          AmsTrayInfo& ext = runtime.ams->external_spool;
+          const int field_count = cJSON_GetArraySize(slot_item);
+          if (field_count > 1) {
+            ext.present = true;
+            const std::string tray_type = json_string(slot_item, "tray_type", ext.material_type);
+            if (!tray_type.empty()) ext.material_type = tray_type;
+            const std::string sub_brands = json_string(slot_item, "tray_sub_brands", ext.material_name);
+            if (!sub_brands.empty()) ext.material_name = sub_brands;
+            if (ext.material_name.empty()) {
+              const std::string tray_idx = json_string(slot_item, "tray_info_idx", "");
+              if (!tray_idx.empty()) {
+                const char* resolved = resolve_filament_name(tray_idx.c_str());
+                if (resolved) ext.material_name = resolved;
+              }
+            }
+            const std::string color_str = json_string(slot_item, "tray_color", "");
+            if (color_str.size() >= 6) {
+              char* end = nullptr;
+              const uint32_t rgba = static_cast<uint32_t>(std::strtoul(color_str.c_str(), &end, 16));
+              if (end != color_str.c_str()) ext.color_rgba = rgba;
+            }
+            ESP_LOGI(kTag, "[DIAG] vir_slot[255]: fields=%d type=%s name=%s color=0x%08X",
+                     field_count,
+                     ext.material_type.empty() ? "(-)" : ext.material_type.c_str(),
+                     ext.material_name.empty() ? "(-)" : ext.material_name.c_str(),
+                     (unsigned)ext.color_rgba);
+          }
+          ext.active = (runtime.tray_now == 254);
+          parsed_ext_spool = true;
+          break;
+        }
+      }
+
+      // V1 path: vt_tray is a single object (X1/P1/A1 series).
+      if (!parsed_ext_spool) {
+        const cJSON* vt_tray = (ams_obj != nullptr)
+            ? cJSON_GetObjectItemCaseSensitive(ams_obj, "vt_tray") : nullptr;
+        if (vt_tray == nullptr || !cJSON_IsObject(vt_tray)) {
+          vt_tray = cJSON_GetObjectItemCaseSensitive(print, "vt_tray");
+        }
+        if (vt_tray != nullptr && cJSON_IsObject(vt_tray)) {
+          if (!runtime.ams) runtime.ams = std::make_shared<AmsSnapshot>();
+          AmsTrayInfo& ext = runtime.ams->external_spool;
+          const int field_count = cJSON_GetArraySize(vt_tray);
+          if (field_count > 1) {
+            ext.present = true;
+            const std::string tray_type = json_string(vt_tray, "tray_type", ext.material_type);
+            if (!tray_type.empty()) ext.material_type = tray_type;
+            const std::string sub_brands = json_string(vt_tray, "tray_sub_brands", ext.material_name);
+            if (!sub_brands.empty()) ext.material_name = sub_brands;
+            if (ext.material_name.empty()) {
+              const std::string tray_idx = json_string(vt_tray, "tray_info_idx", "");
+              if (!tray_idx.empty()) {
+                const char* resolved = resolve_filament_name(tray_idx.c_str());
+                if (resolved) ext.material_name = resolved;
+              }
+            }
+            const std::string color_str = json_string(vt_tray, "tray_color", "");
+            if (color_str.size() >= 6) {
+              char* end = nullptr;
+              const uint32_t rgba = static_cast<uint32_t>(std::strtoul(color_str.c_str(), &end, 16));
+              if (end != color_str.c_str()) ext.color_rgba = rgba;
+            }
+            ESP_LOGI(kTag, "[DIAG] vt_tray: fields=%d type=%s name=%s color=0x%08X",
+                     field_count,
+                     ext.material_type.empty() ? "(-)" : ext.material_type.c_str(),
+                     ext.material_name.empty() ? "(-)" : ext.material_name.c_str(),
+                     (unsigned)ext.color_rgba);
+          } else {
+            ESP_LOGD(kTag, "[DIAG] vt_tray: only %d field(s), skipped", field_count);
+          }
+          ext.active = (runtime.tray_now == 254);
+        }
+      }
+    }
+
+    const uint32_t remaining_seconds = extract_remaining_seconds(print);
+    if (remaining_seconds > 0U) {
+      runtime.remaining_seconds = remaining_seconds;
+    }
+
+    const std::string previous_preview_hint = preview_hint_for(text_string(runtime.gcode_file));
+    const std::string gcode_file = json_string(print, "gcode_file", text_string(runtime.gcode_file));
+    if (!gcode_file.empty()) {
+      copy_text(&runtime.gcode_file, gcode_file);
+    }
+    const std::string preview_hint = preview_hint_for(text_string(runtime.gcode_file));
+    if (!preview_hint.empty() && preview_hint != previous_preview_hint) {
+      ESP_LOGI(kTag, "Preview candidate: %s", preview_hint.c_str());
+    }
+
+    const std::string subtask_name = trim_job_name(
+        json_string(print, "subtask_name", json_string(print, "gcode_file",
+                                                       text_string(runtime.job_name))));
+    if (!subtask_name.empty()) {
+      copy_text(&runtime.job_name, subtask_name);
+    }
+
+    copy_text(&runtime.raw_status, has_status_update ? gcode_state : previous_raw_status);
+    if (has_stage_update) {
+      copy_text(&runtime.raw_stage, resolved_stage);
+    } else if (is_active_gcode_state(effective_gcode_state) && stage_idle_placeholder) {
+      // Active Bambu jobs often emit transient "-1/255 => idle" stage packets between
+      // real sub-states. Keep only the last meaningful runtime stage latched. Do not
+      // carry terminal leftovers like "Finished" into a fresh PREPARE/RUNNING cycle.
+      // A filament change is complete when hw_switch confirms filament loaded AND the
+      // target tray has been seated (tray_now == tray_tar). Checking hw_switch alone
+      // would false-clear at the START of a change when the old filament is still present.
+      const bool tray_seated = runtime.tray_now >= 0 && runtime.tray_now == runtime.tray_tar;
+      const bool filament_done = is_filament_change_stage(previous_raw_stage) &&
+                                 runtime.hw_switch_state == 1 && tray_seated &&
+                                 !runtime.ams_filament_change_latched;
+      if (filament_done) {
+        ESP_LOGI(kTag, "Filament change done (hw_switch=1, tray_now=%d==tray_tar), "
+                 "clearing latched stage '%s'",
+                 runtime.tray_now, previous_raw_stage.c_str());
+      }
+      copy_text(&runtime.raw_stage,
+                (!filament_done && is_meaningful_active_stage(previous_raw_stage))
+                    ? previous_raw_stage : "");
+    } else {
+      copy_text(&runtime.raw_stage, previous_raw_stage);
+    }
+
+    // Refine filament change sub-stage based on hw_switch + tray signals.
+    // changing_filament is generic — synthesize unloading/loading for correct animation.
+    {
+      const std::string current_stage = text_string(runtime.raw_stage);
+      if (current_stage == "changing_filament") {
+        if (runtime.hw_switch_state == 0) {
+          // No filament in extruder.
+          const bool tray_arrived = runtime.tray_now >= 0 && runtime.tray_tar >= 0 &&
+                                    runtime.tray_now == runtime.tray_tar;
+          // External spool (tray_tar==254): printer waits for the user to
+          // feed filament, so this is a loading prompt, not unloading.
+          const bool ext_spool_target = runtime.tray_tar == 254;
+          copy_text(&runtime.raw_stage,
+                    (tray_arrived || ext_spool_target) ? "filament_loading" : "filament_unloading");
+        } else if (runtime.hw_switch_state == 1 &&
+                   runtime.tray_now >= 0 && runtime.tray_tar >= 0 &&
+                   runtime.tray_now != runtime.tray_tar) {
+          // Old filament still present but target tray differs — unloading phase.
+          copy_text(&runtime.raw_stage, "filament_unloading");
+        }
+        // else: hw_switch==1 && tray_now==tray_tar → post-load purge/wipe phase,
+        // keep "changing_filament" for generic filament animation.
+      }
+    }
+    runtime.print_error_code = print_error_code;
+    if (has_hms_update) {
+      runtime.hms_codes = parsed_hms_codes;
+      runtime.hms_alert_count = static_cast<uint16_t>(parsed_hms_codes.size());
+    }
+    // During filament stages Bambu reuses print_error_code for user-action
+    // prompts (e.g. 0x07FFC006 "insert filament").  Suppress that from
+    // has_error so the downstream resolver sees the correct state.
+    const bool filament_stage_now = is_filament_stage(text_string(runtime.raw_stage));
+    runtime.has_error = (has_concrete_error && !filament_stage_now) || paused_fault_latched;
+    runtime.warn_hms = false;
+    runtime.non_error_stop = text_string(runtime.raw_status) == "FAILED" && !has_concrete_error &&
+                             !has_hms_alert;
+    runtime.show_stop_banner = false;
+    runtime.print_active = false;
+    runtime.lifecycle = lifecycle_from_state(text_string(runtime.raw_status),
+                                            has_concrete_error && !filament_stage_now);
+    if (paused_fault_latched) {
+      runtime.lifecycle = PrintLifecycleState::kError;
+    }
+    if (remaining_seconds == 0U &&
+        (runtime.lifecycle == PrintLifecycleState::kFinished ||
+         runtime.lifecycle == PrintLifecycleState::kIdle ||
+         runtime.lifecycle == PrintLifecycleState::kError)) {
+      runtime.remaining_seconds = 0U;
+    }
+    const std::string raw_stage = text_string(runtime.raw_stage);
+    const std::string raw_status = text_string(runtime.raw_status);
+    if (!raw_stage.empty()) {
+      copy_text(&runtime.stage, raw_stage);
+    } else if (!raw_status.empty()) {
+      copy_text(&runtime.stage, stage_label_for(raw_status, stage_id, has_concrete_error));
+    } else {
+      copy_text(&runtime.stage, previous_stage);
+    }
+
+    const std::string current_stage_for_progress =
+        !text_string(runtime.raw_stage).empty() ? text_string(runtime.raw_stage)
+                                                : text_string(runtime.stage);
+    const std::string previous_stage_for_progress =
+        !previous_raw_stage.empty() ? previous_raw_stage : previous_stage;
+    const bool current_download_phase =
+        is_download_stage(current_stage_for_progress, text_string(runtime.raw_status));
+    const bool current_specific_non_download_stage =
+        !current_download_phase &&
+        is_post_download_handoff_stage(current_stage_for_progress, text_string(runtime.raw_status));
+    const bool download_progress_complete =
+        runtime.progress_is_download_related && runtime.progress_percent >= 99.5f;
+    const bool current_prepare_phase =
+        current_download_phase || runtime.lifecycle == PrintLifecycleState::kPreparing;
+    const bool entering_new_active_cycle =
+        has_status_update && is_active_gcode_state(text_string(runtime.raw_status)) &&
+        !is_active_gcode_state(previous_raw_status);
+    const bool leaving_download_phase =
+        is_download_stage(previous_stage_for_progress, previous_raw_status) &&
+        !current_download_phase;
+    const bool should_reset_progress_for_new_cycle =
+        ((entering_new_active_cycle && current_prepare_phase &&
+          (previous_lifecycle == PrintLifecycleState::kFinished ||
+           previous_lifecycle == PrintLifecycleState::kIdle ||
+           previous_lifecycle == PrintLifecycleState::kUnknown ||
+           previous_lifecycle == PrintLifecycleState::kError) &&
+          (!has_progress_update || !current_download_phase || !progress_is_download_related))) ||
+        (leaving_download_phase && download_progress_complete &&
+         (!has_progress_update || progress_is_download_related));
+    if (should_reset_progress_for_new_cycle) {
+      runtime.progress_percent = 0.0f;
+      runtime.progress_is_download_related = current_download_phase;
+      runtime.remaining_seconds = 0U;
+      runtime.current_layer = 0U;
+      runtime.total_layers = 0U;
+    } else if (current_specific_non_download_stage && download_progress_complete) {
+      runtime.progress_percent = 0.0f;
+      runtime.progress_is_download_related = false;
+    } else if (leaving_download_phase && !has_progress_update) {
+      // Download phase ended — clear stale download progress regardless of
+      // whether it reached 100%.  The previous >=99.5 threshold missed cases
+      // where the printer's last download report was 99%.
+      runtime.progress_percent = 0.0f;
+      runtime.progress_is_download_related = false;
+    }
+
+    const bool finished_no_error = runtime.lifecycle == PrintLifecycleState::kFinished &&
+                                    runtime.print_error_code == 0;
+    const std::string error_detail =
+        finished_no_error ? std::string{} :
+        error_detail_for(runtime.print_error_code, runtime.hms_codes, runtime.hms_alert_count,
+                         runtime.local_model);
+    if (!error_detail.empty()) {
+      copy_text(&runtime.detail, error_detail);
+    } else if (paused_fault_latched && previous_pause_fault && !previous_detail.empty() &&
+               previous_detail != "Paused") {
+      copy_text(&runtime.detail, previous_detail);
+    } else if (has_text(runtime.job_name) && runtime.lifecycle == PrintLifecycleState::kPrinting) {
+      copy_text(&runtime.detail, text_string(runtime.job_name));
+    } else if (has_status_update || has_stage_update ||
+               (has_hms_update && hms_count == 0 && previous_print_error_code == 0)) {
+      // Also refresh detail when HMS clears (hms_count drops to 0 with no print_error),
+      // so stale error text does not linger on the main screen.
+      copy_text(&runtime.detail, text_string(runtime.stage));
+    } else if (previous_detail.empty()) {
+      copy_text(&runtime.detail, "Status payload received");
+    } else {
+      copy_text(&runtime.detail, previous_detail);
+    }
+    update_local_runtime_metadata(&runtime, true, true);
+
+    received_payload_ = true;
+    // [DIAG] Log resolved state after all synthesis — on every change.
+    {
+      const std::string new_raw_status = text_string(runtime.raw_status);
+      const std::string new_raw_stage = text_string(runtime.raw_stage);
+      const std::string new_stage = text_string(runtime.stage);
+      const std::string new_detail = text_string(runtime.detail);
+      if (new_raw_status != previous_raw_status || new_raw_stage != previous_raw_stage ||
+          new_stage != previous_stage || new_detail != previous_detail) {
+        ESP_LOGI(kTag, "[DIAG] local resolved: status=%s raw_stage=%s stage=%s "
+                 "lifecycle=%s detail=%.60s",
+                 new_raw_status.c_str(),
+                 new_raw_stage.empty() ? "(-)" : new_raw_stage.c_str(),
+                 new_stage.c_str(), to_string(runtime.lifecycle),
+                 new_detail.c_str());
+      }
+    }
+    if ((print_error_code != previous_print_error_code ||
+         runtime.hms_alert_count != previous_hms_alert_count ||
+         (fault_pause_signal && !previous_pause_fault)) &&
+        (has_concrete_error || has_hms_alert || paused_fault_latched)) {
+      ESP_LOGW(kTag, "Local printer alert: status=%s stage=%s stg_cur=%d print_error=%d hms=%u",
+               text_string(runtime.raw_status).c_str(), text_string(runtime.stage).c_str(),
+               stage_id, print_error_code, static_cast<unsigned int>(runtime.hms_alert_count));
+    }
+    store_runtime_state(std::move(runtime), true);
+    cJSON_Delete(root);
+    return;
+  }
+
+  const cJSON* info = cJSON_GetObjectItemCaseSensitive(root, "info");
+  if (cJSON_IsObject(info)) {
+    LocalPrinterRuntimeState runtime = runtime_state_copy();
+    runtime.connection = PrinterConnectionState::kOnline;
+    std::string active_serial;
+    {
+      std::lock_guard<std::mutex> lock(config_mutex_);
+      active_serial = active_connection_.serial;
+    }
+    const cJSON* modules = child_array_local(info, "module");
+    if (modules == nullptr) {
+      modules = child_array_local(info, "modules");
+    }
+    runtime.local_model = detect_printer_model(
+        modules, detect_printer_model_from_payload(info, runtime.local_model));
+    runtime.chamber_light_supported =
+        runtime.chamber_light_supported || printer_model_has_chamber_light(runtime.local_model);
+    copy_text(&runtime.resolved_serial,
+              extract_module_serial(modules, json_string(info, "sn", active_serial)));
+    if (text_string(runtime.detail) == "Connecting to local Bambu MQTT" ||
+        !has_text(runtime.detail)) {
+      copy_text(&runtime.detail,
+                std::string("Printer info received (") + to_string(runtime.local_model) + ")");
+    }
+    update_local_runtime_metadata(&runtime, true, true);
+    store_runtime_state(std::move(runtime), true);
+  }
+  cJSON_Delete(root);
+}
+
+void PrinterClient::stop_client() {
+  mqtt_connected_ = false;
+  session_ever_established_ = false;
+  received_payload_ = false;
+  subscription_acknowledged_ = false;
+  initial_sync_sent_ = false;
+  delayed_pushall_sent_ = false;
+  first_payload_observed_ = false;
+  chamber_light_command_pending_ = false;
+  client_started_ = false;
+  client_rebuild_requested_ = false;
+  force_client_rebuild_ = false;
+  last_message_tick_ = 0;
+  initial_sync_tick_ = 0;
+  connection_state_tick_ = 0;
+  watchdog_probe_tick_ = 0;
+  rebuild_request_tick_ = 0;
+  rebuild_delay_ticks_ = 0;
+
+  {
+    std::lock_guard<std::mutex> lock(incoming_mutex_);
+    incoming_topic_.clear();
+    incoming_payload_.clear();
+  }
+
+  if (client_ != nullptr) {
+    esp_mqtt_client_stop(client_);
+    // Brief delay to let the MQTT internal task fully unwind before destroying the
+    // client handle. Without this, destroying while the task is mid-TLS-handshake
+    // leaks ~13 KB of internal RAM (mbedTLS session context) per failed attempt.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_mqtt_client_destroy(client_);
+    client_ = nullptr;
+    log_heap_status("After MQTT client destroy");
+  }
+}
+
+bool PrinterClient::publish_chamber_light_command(bool on) {
+  if (!mqtt_connected_.load() || client_ == nullptr) {
+    return false;
+  }
+
+  const LocalPrinterRuntimeState runtime = runtime_state_copy();
+  const bool supports_secondary =
+      printer_model_has_secondary_chamber_light(runtime.local_model);
+
+  auto publish_ledctrl = [&](const char* node) {
+    const std::string payload = build_ledctrl_payload(node, on);
+    if (payload.empty()) {
+      return false;
+    }
+
+    const int msg_id =
+        esp_mqtt_client_publish(client_, request_topic_.c_str(), payload.c_str(), 0, 0, 0);
+    if (msg_id < 0) {
+      ESP_LOGW(kTag, "Failed to publish chamber light command for %s", node);
+      return false;
+    }
+    return true;
+  };
+
+  const bool primary_ok = publish_ledctrl("chamber_light");
+  const bool secondary_ok = !supports_secondary || publish_ledctrl("chamber_light2");
+  return primary_ok && secondary_ok;
+}
+
+void PrinterClient::process_pending_chamber_light_command() {
+  if (!chamber_light_command_pending_.load() || !mqtt_connected_.load() || client_ == nullptr) {
+    return;
+  }
+
+  const bool on = chamber_light_command_on_.load();
+  chamber_light_command_pending_ = false;
+  if (publish_chamber_light_command(on)) {
+    ESP_LOGI(kTag, "Local chamber light command published: %s", on ? "on" : "off");
+  } else {
+    ESP_LOGW(kTag, "Local chamber light command publish failed");
+  }
+}
+
+void PrinterClient::schedule_client_rebuild(const char* reason, uint32_t delay_ms,
+                                            bool force_when_connected) {
+  uint32_t effective_ms = delay_ms == 0 ? kRebuildDelayMs : delay_ms;
+  if (session_ever_established_.load() && effective_ms > 5000U) {
+    effective_ms = 5000U;
+  }
+  const uint32_t delay_ticks = pdMS_TO_TICKS(effective_ms);
+
+  if (force_when_connected) {
+    force_client_rebuild_ = true;
+  }
+  if (client_rebuild_requested_.exchange(true)) {
+    if (force_when_connected) {
+      rebuild_request_tick_ = xTaskGetTickCount();
+      rebuild_delay_ticks_ = delay_ticks;
+      ESP_LOGW(kTag, "Upgrading pending MQTT client rebuild to forced in %u ms (%s)",
+               static_cast<unsigned int>(effective_ms),
+               reason != nullptr ? reason : "unspecified");
+    }
+    return;
+  }
+  // Once the session has been established at least once for this profile,
+  // subsequent rebuilds are cheap (no TCP probe, no fresh TLS session —
+  // esp-mqtt's internal reconnect handles it). Cap long backoffs so a
+  // transient drop doesn't strand us in a 30 s retry window, which in
+  // local-only mode nobody would wake us out of.
+  rebuild_request_tick_ = xTaskGetTickCount();
+  rebuild_delay_ticks_ = delay_ticks;
+  ESP_LOGW(kTag, "Scheduling MQTT client rebuild in %u ms (%s)",
+           static_cast<unsigned int>(effective_ms),
+           reason != nullptr ? reason : "unspecified");
+}
+
+void PrinterClient::cancel_client_rebuild() {
+  client_rebuild_requested_ = false;
+  force_client_rebuild_ = false;
+  rebuild_request_tick_ = 0;
+  rebuild_delay_ticks_ = 0;
+}
+
+void PrinterClient::notify_cloud_presence(bool online) {
+  if (!online) {
+    ESP_LOGI(kTag, "Cloud presence hint: printer offline (no local action)");
+    return;
+  }
+  if (mqtt_connected_.load()) {
+    ESP_LOGD(kTag, "Cloud presence hint: printer online, local MQTT already connected");
+    return;
+  }
+  // Collapse any pending backoff and force an immediate connect attempt.
+  // The task loop picks this up within ~250 ms. Also zero the failure counters
+  // so the next attempt restarts from the aggressive early-retry cadence.
+  ESP_LOGI(kTag, "Cloud presence hint: printer online, collapsing backoff and retrying local MQTT");
+  consecutive_probe_failures_ = 0;
+  consecutive_mqtt_errors_ = 0;
+  if (client_rebuild_requested_.load()) {
+    rebuild_request_tick_ = xTaskGetTickCount();
+    rebuild_delay_ticks_ = pdMS_TO_TICKS(250);
+  } else if (client_ != nullptr && !mqtt_connected_.load()) {
+    schedule_client_rebuild("cloud presence hint", 250);
+  }
+  wake_task();
+}
+
+void PrinterClient::set_pre_local_mqtt_callback(std::function<uint32_t()> cb) {
+  std::lock_guard<std::mutex> lock(pre_local_mqtt_mutex_);
+  pre_local_mqtt_callback_ = std::move(cb);
+}
+
+uint32_t PrinterClient::prepare_for_local_mqtt_start() {
+  std::function<uint32_t()> cb;
+  {
+    std::lock_guard<std::mutex> lock(pre_local_mqtt_mutex_);
+    cb = pre_local_mqtt_callback_;
+  }
+  if (!cb) {
+    return 0;
+  }
+  return cb();
+}
+
+void PrinterClient::set_network_ready(bool ready) {
+  const bool previous = network_ready_.exchange(ready);
+  if (ready && !previous) {
+    // Wi-Fi just came (back) up. Collapse any pending reconnect backoff and
+    // wake the task so it can retry immediately instead of sitting in a stale
+    // backoff window computed before the link loss. This is the local-only
+    // counterpart to notify_cloud_presence(true).
+    ESP_LOGI(kTag, "Wi-Fi ready hint: collapsing backoff and waking task");
+    consecutive_probe_failures_ = 0;
+    consecutive_mqtt_errors_ = 0;
+    if (client_rebuild_requested_.load()) {
+      rebuild_request_tick_ = xTaskGetTickCount();
+      rebuild_delay_ticks_ = pdMS_TO_TICKS(250);
+    }
+    wake_task();
+  }
+}
+
+void PrinterClient::task_loop() {
+  while (true) {
+    if (runtime_dirty_.exchange(false)) {
+      publish_runtime_snapshot();
+    }
+
+    if (reconfigure_requested_.exchange(false)) {
+      stop_client();
+    }
+
+    uint32_t now = xTaskGetTickCount();
+    if (client_rebuild_requested_.load()) {
+      const bool force_rebuild = force_client_rebuild_.load();
+      if (mqtt_connected_.load() && !force_rebuild) {
+        cancel_client_rebuild();
+      } else {
+        const uint32_t requested_at = rebuild_request_tick_.load();
+        const uint32_t delay_ticks = rebuild_delay_ticks_.load();
+        if (requested_at == 0 || tick_elapsed(requested_at, now, delay_ticks)) {
+          ESP_LOGW(kTag, "Rebuilding MQTT client after disconnect/error%s",
+                   force_rebuild ? " (forced)" : "");
+          stop_client();
+          cancel_client_rebuild();
+          vTaskDelay(pdMS_TO_TICKS(250));
+          continue;
+        }
+        // Rebuild delay not yet elapsed — wait instead of falling through to
+        // the client_==nullptr path which would immediately start a new TCP probe.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        continue;
+      }
+    }
+
+    const PrinterConnection connection = desired_connection();
+    if (!connection.is_ready()) {
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        active_connection_ = {};
+      }
+      report_topic_.clear();
+      request_topic_.clear();
+      client_id_.clear();
+      set_waiting_snapshot(connection);
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (!network_ready_.load()) {
+      stop_client();
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        active_connection_ = connection;
+      }
+
+      LocalPrinterRuntimeState waiting = runtime_state_copy();
+      waiting.connection = PrinterConnectionState::kConnecting;
+      waiting.lifecycle = PrintLifecycleState::kUnknown;
+      copy_text(&waiting.raw_status, "");
+      copy_text(&waiting.raw_stage, "");
+      copy_text(&waiting.stage, "wifi");
+      copy_text(&waiting.detail, "Waiting for Wi-Fi IP");
+      waiting.has_error = false;
+      waiting.non_error_stop = false;
+      waiting.show_stop_banner = false;
+      copy_text(&waiting.resolved_serial, connection.serial);
+      update_local_runtime_metadata(&waiting, true, false);
+      store_runtime_state(std::move(waiting), false);
+      publish_runtime_snapshot();
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (client_ == nullptr) {
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        active_connection_ = connection;
+      }
+      report_topic_ = "device/" + connection.serial + "/report";
+      request_topic_ = "device/" + connection.serial + "/request";
+      client_id_ = make_client_id();
+
+      LocalPrinterRuntimeState runtime = runtime_state_copy();
+      runtime.connection = PrinterConnectionState::kConnecting;
+      runtime.lifecycle = PrintLifecycleState::kUnknown;
+      copy_text(&runtime.raw_status, "");
+      copy_text(&runtime.raw_stage, "");
+      copy_text(&runtime.stage, "mqtt");
+      copy_text(&runtime.detail, "Connecting to local Bambu MQTT");
+      copy_text(&runtime.job_name, "");
+      copy_text(&runtime.gcode_file, "");
+      copy_text(&runtime.resolved_serial, connection.serial);
+      runtime.print_error_code = 0;
+      runtime.hms_codes.clear();
+      runtime.hms_alert_count = 0;
+      runtime.has_error = false;
+      runtime.warn_hms = false;
+      runtime.print_active = false;
+      runtime.non_error_stop = false;
+      runtime.show_stop_banner = false;
+      update_local_runtime_metadata(&runtime, true, false);
+      store_runtime_state(std::move(runtime), false);
+      publish_runtime_snapshot();
+
+      ESP_LOGI(kTag, "Connecting to printer MQTT %s:%u (serial=%s, user=%s)",
+               connection.host.c_str(), static_cast<unsigned int>(connection.mqtt_port),
+               connection.serial.c_str(), connection.mqtt_username.c_str());
+
+      // TCP probe: best-effort diagnostics before the TLS+MQTT handshake.
+      // Do not gate the real esp-mqtt client on this preflight check: with
+      // ESP-IDF 6/lwIP, nonblocking connect can false-timeout during AP/ARP
+      // churn while esp-mqtt would still connect or recover through its own
+      // timeout/backoff path.
+      const bool skip_probe = session_ever_established_.load();
+      if (skip_probe) {
+        ESP_LOGI(kTag, "TCP probe: skipping (session previously established, relying on esp-mqtt reconnect)");
+        consecutive_probe_failures_ = 0;
+      } else {
+        int probe_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (probe_sock >= 0) {
+          struct sockaddr_in dest = {};
+          dest.sin_family = AF_INET;
+          dest.sin_port = htons(connection.mqtt_port);
+          inet_aton(connection.host.c_str(), &dest.sin_addr);
+
+          int flags = fcntl(probe_sock, F_GETFL, 0);
+          fcntl(probe_sock, F_SETFL, flags | O_NONBLOCK);
+
+          int probe_errno = 0;
+          errno = 0;
+          int rc = connect(probe_sock, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
+          if (rc < 0 && errno == EINPROGRESS) {
+            fd_set wset;
+            FD_ZERO(&wset);
+            FD_SET(probe_sock, &wset);
+            struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+            int sel = select(probe_sock + 1, nullptr, &wset, nullptr, &tv);
+            if (sel > 0) {
+              int sock_err = 0;
+              socklen_t optlen = sizeof(sock_err);
+              getsockopt(probe_sock, SOL_SOCKET, SO_ERROR, &sock_err, &optlen);
+              if (sock_err != 0) {
+                rc = -1;
+                probe_errno = sock_err;
+              } else {
+                rc = 0;
+              }
+            } else {
+              rc = -1;
+              probe_errno = sel == 0 ? ETIMEDOUT : errno;
+            }
+          } else if (rc < 0) {
+            probe_errno = errno;
+          }
+
+          close(probe_sock);
+
+          if (rc < 0) {
+            ++consecutive_probe_failures_;
+
+            // Advisory only; esp-mqtt performs the real connect/retry path.
+            ESP_LOGW(kTag,
+                     "TCP probe: host %s:%u advisory check failed (attempt=%d errno=%d); "
+                     "continuing with esp-mqtt",
+                     connection.host.c_str(), static_cast<unsigned>(connection.mqtt_port),
+                     static_cast<int>(consecutive_probe_failures_), probe_errno);
+            log_wifi_link_diagnostics("TCP probe advisory failed");
+          } else {
+            ESP_LOGI(kTag, "TCP probe: port %u reachable on %s",
+                     static_cast<unsigned>(connection.mqtt_port),
+                     connection.host.c_str());
+            consecutive_probe_failures_ = 0;
+          }
+        }
+      }
+
+      const uint32_t handoff_delay_ms = prepare_for_local_mqtt_start();
+      if (handoff_delay_ms > 0) {
+        ESP_LOGI(kTag, "Waiting %ums before local MQTT TLS start",
+                 static_cast<unsigned>(handoff_delay_ms));
+        vTaskDelay(pdMS_TO_TICKS(handoff_delay_ms));
+      }
+
+      esp_mqtt_client_config_t mqtt_cfg = {};
+      mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+      const std::string& local_ca_bundle = local_bambu_ca_bundle();
+      if (!local_ca_bundle.empty()) {
+        mqtt_cfg.broker.verification.certificate = local_ca_bundle.c_str();
+        mqtt_cfg.broker.verification.certificate_len = local_ca_bundle.size() + 1U;
+        mqtt_cfg.broker.verification.skip_cert_common_name_check = true;
+        ESP_LOGI(kTag,
+                 "Using embedded local Bambu CA bundle for MQTT TLS verification "
+                 "(hostname check disabled)");
+      } else {
+        mqtt_cfg.broker.verification.skip_cert_common_name_check = true;
+        ESP_LOGW(kTag,
+                 "Embedded local Bambu CA bundle is empty; falling back to insecure local MQTT TLS");
+      }
+      mqtt_cfg.credentials.client_id = client_id_.c_str();
+      // Shorter keepalive (was 60s) helps detect stalled LAN sessions faster — the
+      // Bambu firmware and some router NAT tables drop idle LAN-MQTT sessions after
+      // ~30-45s, leaving us with a zombie TCP session that silently loses traffic.
+      // ha-bambulab uses 5s; 20s is a pragmatic compromise for ESP32 radio duty cycle.
+      mqtt_cfg.session.keepalive = 20;
+      mqtt_cfg.session.disable_clean_session = false;
+      mqtt_cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
+      mqtt_cfg.buffer.size = 16384;
+      mqtt_cfg.buffer.out_size = 4096;
+      mqtt_cfg.task.stack_size = 10240;
+      mqtt_cfg.network.timeout_ms = 20000;
+      mqtt_cfg.network.reconnect_timeout_ms = 5000;
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        mqtt_cfg.broker.address.hostname = active_connection_.host.c_str();
+        mqtt_cfg.broker.address.port = active_connection_.mqtt_port;
+        mqtt_cfg.credentials.username = active_connection_.mqtt_username.c_str();
+        mqtt_cfg.credentials.authentication.password = active_connection_.access_code.c_str();
+      }
+
+      log_heap_status("Before MQTT client init");
+      client_ = esp_mqtt_client_init(&mqtt_cfg);
+      if (client_ == nullptr) {
+        LocalPrinterRuntimeState failed = runtime_state_copy();
+        failed.connection = PrinterConnectionState::kError;
+        failed.lifecycle = PrintLifecycleState::kError;
+        copy_text(&failed.raw_status, "");
+        copy_text(&failed.raw_stage, "");
+        copy_text(&failed.stage, "mqtt-init");
+        copy_text(&failed.detail, "Failed to create MQTT client");
+        failed.has_error = true;
+        failed.non_error_stop = false;
+        failed.show_stop_banner = false;
+        copy_text(&failed.resolved_serial, connection.serial);
+        update_local_runtime_metadata(&failed, true, false);
+        store_runtime_state(std::move(failed), false);
+        publish_runtime_snapshot();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        continue;
+      }
+
+      log_heap_status("Before MQTT client start (TLS handshake)");
+      esp_mqtt_client_register_event(client_, MQTT_EVENT_ANY, &PrinterClient::mqtt_event_handler, this);
+      if (esp_mqtt_client_start(client_) != ESP_OK) {
+        LocalPrinterRuntimeState failed = runtime_state_copy();
+        failed.connection = PrinterConnectionState::kError;
+        failed.lifecycle = PrintLifecycleState::kError;
+        copy_text(&failed.raw_status, "");
+        copy_text(&failed.raw_stage, "");
+        copy_text(&failed.stage, "mqtt-start");
+        copy_text(&failed.detail, "Failed to start MQTT client");
+        failed.has_error = true;
+        failed.non_error_stop = false;
+        failed.show_stop_banner = false;
+        copy_text(&failed.resolved_serial, connection.serial);
+        update_local_runtime_metadata(&failed, true, false);
+        store_runtime_state(std::move(failed), false);
+        publish_runtime_snapshot();
+        esp_mqtt_client_destroy(client_);
+        client_ = nullptr;
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        continue;
+      }
+
+      client_started_ = true;
+      connection_state_tick_ = xTaskGetTickCount();
+      last_message_tick_ = xTaskGetTickCount();
+      now = xTaskGetTickCount();
+    }
+
+    if (mqtt_connected_ && subscription_acknowledged_ && initial_sync_sent_ && !received_payload_ &&
+        !delayed_pushall_sent_) {
+      const uint32_t initial_sync_tick = initial_sync_tick_.load();
+      if (tick_elapsed(initial_sync_tick, now, pdMS_TO_TICKS(kDelayedPushallMs))) {
+        ESP_LOGW(kTag, "No status payload received after subscribe, sending delayed pushall");
+        publish_request(kPushAll);
+        delayed_pushall_sent_ = true;
+      }
+    }
+
+    if (mqtt_connected_ && subscription_acknowledged_ && initial_sync_sent_ && !received_payload_ &&
+        delayed_pushall_sent_) {
+      const uint32_t initial_sync_tick = initial_sync_tick_.load();
+      if (tick_elapsed(initial_sync_tick, now, pdMS_TO_TICKS(kInitialSyncTimeoutMs))) {
+        ESP_LOGW(kTag, "Still no status payload after delayed pushall, forcing reconnect");
+        schedule_client_rebuild("initial sync timeout", kRebuildDelayMs, true);
+      }
+    }
+
+    if (mqtt_connected_ && subscription_acknowledged_ && received_payload_) {
+      const uint32_t last = last_message_tick_.load();
+      if (tick_elapsed(last, now, pdMS_TO_TICKS(kNoDataProbeMs))) {
+        const uint32_t probe_tick = watchdog_probe_tick_.load();
+        if (probe_tick == 0) {
+          ESP_LOGW(kTag, "No MQTT data for %us, sending keepalive start request",
+                   static_cast<unsigned>(kNoDataProbeMs / 1000U));
+          publish_request(kStartPush);
+          watchdog_probe_tick_ = now;
+        } else if (tick_elapsed(probe_tick, now, pdMS_TO_TICKS(kNoDataReconnectMs))) {
+          ESP_LOGW(kTag, "Still no MQTT data after keepalive probe, forcing reconnect");
+          schedule_client_rebuild("no data watchdog", kRebuildDelayMs, true);
+        }
+      } else {
+        watchdog_probe_tick_ = 0;
+      }
+    }
+
+    if (client_ != nullptr && !mqtt_connected_) {
+      const uint32_t state_tick = connection_state_tick_.load();
+      if (tick_elapsed(state_tick, now, pdMS_TO_TICKS(kDisconnectedStallMs))) {
+        ESP_LOGW(kTag, "MQTT client stayed disconnected too long, forcing rebuild");
+        // Honour the growing-backoff curve here too. Without this scaling the
+        // disconnected-stall watchdog overrides the MQTT-error backoff with
+        // the default 1.5 s rebuild delay, so an unreachable printer would
+        // keep getting hit every ~25 s no matter how many attempts already
+        // failed.
+        const uint32_t errs = consecutive_mqtt_errors_;
+        const uint32_t stall_backoff_ms =
+            errs <= 1 ? kRebuildDelayMs :
+            errs <= 2 ? 4000U :
+            errs <= 4 ? 8000U :
+            errs <= 6 ? 15000U :
+            errs <= 8 ? 30000U :
+            errs <= 10 ? 60000U :
+            errs <= 12 ? 120000U : 300000U;
+        schedule_client_rebuild("disconnected stall", stall_backoff_ms);
+      }
+    }
+
+    process_pending_chamber_light_command();
+
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
+  }
+}
+
+void PrinterClient::set_waiting_snapshot(const PrinterConnection& connection) {
+  LocalPrinterRuntimeState runtime;
+  if (!connection.is_ready()) {
+    runtime.connection = PrinterConnectionState::kWaitingForCredentials;
+    runtime.lifecycle = PrintLifecycleState::kUnknown;
+    copy_text(&runtime.stage, "setup");
+    copy_text(&runtime.detail, "Need printer host, serial and access code");
+  } else {
+    runtime.connection = PrinterConnectionState::kReadyForLanConnect;
+    runtime.lifecycle = PrintLifecycleState::kIdle;
+    copy_text(&runtime.stage, "ready");
+    copy_text(&runtime.detail, "Printer credentials loaded");
+  }
+  copy_text(&runtime.resolved_serial, connection.serial);
+  update_local_runtime_metadata(&runtime, connection.is_ready(), false);
+  store_runtime_state(std::move(runtime), false);
+  publish_runtime_snapshot();
+}
+
+bool PrinterClient::publish_request(const char* payload) {
+  if (!mqtt_connected_ || client_ == nullptr || payload == nullptr) {
+    return false;
+  }
+
+  const int msg_id = esp_mqtt_client_publish(client_, request_topic_.c_str(), payload, 0, 1, 0);
+  if (msg_id < 0) {
+    ESP_LOGW(kTag, "Failed to publish to %s", request_topic_.c_str());
+    return false;
+  }
+  return true;
+}
+
+void PrinterClient::request_initial_sync() {
+  publish_request(kGetVersion);
+  publish_request(kStartPush);
+}
+
+PrintLifecycleState PrinterClient::lifecycle_from_state(const std::string& gcode_state,
+                                                        bool has_concrete_error) {
+  const PrintLifecycleState lifecycle = lifecycle_from_bambu_status(gcode_state, has_concrete_error);
+  if (gcode_state == "FAILED" && !has_concrete_error) {
+    return PrintLifecycleState::kIdle;
+  }
+  return lifecycle;
+}
+
+std::string PrinterClient::stage_label_for(const std::string& gcode_state, int stage_id,
+                                           bool has_concrete_error) {
+  if (const std::string stage_label = bambu_stage_label_from_id(stage_id); !stage_label.empty()) {
+    return stage_label;
+  }
+  const std::string fallback = bambu_default_stage_label_for_status(gcode_state, has_concrete_error);
+  if (fallback != "Status") {
+    return fallback;
+  }
+  if (stage_id >= 0) {
+    char buffer[24] = {};
+    std::snprintf(buffer, sizeof(buffer), "Stage %d", stage_id);
+    return buffer;
+  }
+  return "Status";
+}
+
+std::string PrinterClient::error_detail_for(int print_error_code, const std::vector<uint64_t>& hms_codes,
+                                            int hms_count, PrinterModel model) {
+  return format_resolved_error_detail(print_error_code, hms_codes, hms_count, model);
+}
+
+std::string PrinterClient::trim_job_name(const std::string& name) {
+  if (name.empty()) {
+    return {};
+  }
+
+  std::string trimmed = name;
+  const size_t slash = trimmed.find_last_of("/\\");
+  if (slash != std::string::npos) {
+    trimmed = trimmed.substr(slash + 1);
+  }
+
+  const char* suffixes[] = {".gcode.3mf", ".3mf", ".gcode"};
+  for (const char* suffix : suffixes) {
+    const size_t suffix_len = std::strlen(suffix);
+    if (trimmed.size() >= suffix_len &&
+        trimmed.compare(trimmed.size() - suffix_len, suffix_len, suffix) == 0) {
+      trimmed.resize(trimmed.size() - suffix_len);
+      break;
+    }
+  }
+
+  return trimmed;
+}
+
+std::string PrinterClient::preview_hint_for(const std::string& gcode_file) {
+  if (gcode_file.empty()) {
+    return {};
+  }
+
+  std::string hint = gcode_file;
+  std::replace(hint.begin(), hint.end(), '\\', '/');
+
+  const char* suffixes[] = {".gcode.3mf", ".3mf", ".gcode"};
+  for (const char* suffix : suffixes) {
+    const size_t suffix_len = std::strlen(suffix);
+    if (hint.size() >= suffix_len &&
+        hint.compare(hint.size() - suffix_len, suffix_len, suffix) == 0) {
+      hint.resize(hint.size() - suffix_len);
+      hint += ".png";
+      return hint;
+    }
+  }
+
+  const size_t dot = hint.find_last_of('.');
+  if (dot != std::string::npos) {
+    hint.resize(dot);
+  }
+  hint += ".png";
+  return hint;
+}
+
+float PrinterClient::json_number(const cJSON* object, const char* key, float fallback) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (cJSON_IsNumber(item)) {
+    return static_cast<float>(item->valuedouble);
+  }
+  if (cJSON_IsString(item) && item->valuestring != nullptr) {
+    return static_cast<float>(std::atof(item->valuestring));
+  }
+
+  return fallback;
+}
+
+int PrinterClient::json_int(const cJSON* object, const char* key, int fallback) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (cJSON_IsNumber(item)) {
+    return item->valueint;
+  }
+  if (cJSON_IsString(item) && item->valuestring != nullptr) {
+    int value = fallback;
+    return parse_int_text_local(item->valuestring, &value) ? value : fallback;
+  }
+
+  return fallback;
+}
+
+std::string PrinterClient::json_string(const cJSON* object, const char* key,
+                                       const std::string& fallback) {
+  if (object == nullptr || key == nullptr) {
+    return fallback;
+  }
+
+  const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (!cJSON_IsString(item) || item->valuestring == nullptr) {
+    return fallback;
+  }
+
+  return item->valuestring;
+}
+
+}  // namespace printsphere

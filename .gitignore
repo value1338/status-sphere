@@ -1,0 +1,25 @@
+# ESP-IDF build
+build/
+sdkconfig.old
+sdkconfig.defaults.old
+dependencies.lock
+
+# Editor Python venv
+tools/editor/.venv/
+__pycache__/
+*.pyc
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Secrets / local overrides
+tools/editor/idf_path.txt
+.env
+*.pem
+
+# Large local logs (keep docs images)
+*.log

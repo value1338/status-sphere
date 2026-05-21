@@ -1,0 +1,2387 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Status Sphere Display Editor</title>
+<link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e13;
+  --panel: #111827;
+  --card: #1e293b;
+  --border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --green: #22c55e;
+  --red: #ef4444;
+  --display-size: 466px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar-left {
+  width: 250px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.section-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  background: #0d1117;
+  font-weight: 700;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.page-tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 1px solid #1e293b;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+.page-tab:hover { background: #1e293b; }
+.page-tab.active { background: var(--accent); color: #fff; }
+.page-btns {
+  display: flex;
+  gap: 3px;
+  padding: 6px 14px;
+  flex-wrap: wrap;
+}
+.page-btns button, .sm-btn {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+}
+.layer-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #1e293b;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.layer-item:hover { background: #1e293b; }
+.layer-item.selected { background: var(--accent); color: #fff; }
+.layer-item .del-btn {
+  background: none; border: none; color: var(--red); cursor: pointer;
+  font-size: 13px; opacity: 0.5; padding: 0 3px;
+}
+.layer-item .del-btn:hover { opacity: 1; }
+
+.field-item {
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: grab;
+  border-bottom: 1px solid #1a2030;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  transition: background 0.1s;
+}
+.field-item:hover { background: #1e293b; color: var(--text); }
+.field-item:active { cursor: grabbing; }
+.field-item .f-name { font-weight: 600; color: var(--text); font-family: monospace; font-size: 11px; }
+.field-item .f-val { font-size: 11px; color: #64748b; }
+.field-item .f-add {
+  background: var(--green); color: #041; border: none; border-radius: 3px;
+  font-size: 10px; font-weight: 700; padding: 2px 6px; cursor: pointer;
+  opacity: 0; transition: opacity 0.1s;
+}
+.field-item:hover .f-add { opacity: 1; }
+.field-empty { padding: 16px; text-align: center; color: #475569; font-size: 12px; }
+
+.center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
+}
+.toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.toolbar input[type="text"] {
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  width: 240px;
+  font-size: 12px;
+}
+.toolbar button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 11px;
+}
+.toolbar select {
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-green { background: var(--green) !important; color: #041 !important; }
+.btn-red { background: var(--red) !important; color: #fff !important; }
+.btn-blue { background: var(--accent) !important; color: #fff !important; }
+.btn-gray { background: var(--card) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
+.status-line { font-size: 11px; color: var(--muted); height: 16px; }
+
+.display-frame {
+  width: var(--display-size);
+  height: var(--display-size);
+  border-radius: 50%;
+  background: #000;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 60px rgba(0,0,0,0.8), 0 0 0 4px #1a1a2e, 0 0 0 8px #0d0d1a;
+  flex-shrink: 0;
+}
+.display-frame.drop-hover { box-shadow: 0 0 60px rgba(0,0,0,0.8), 0 0 0 4px var(--accent), 0 0 0 8px #0d0d1a; }
+.display-frame .empty-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #334155;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+  line-height: 1.6;
+}
+
+.display-frame .el {
+  position: absolute;
+  cursor: move;
+  user-select: none;
+  white-space: nowrap;
+}
+.display-frame .el:hover { outline: 1px dashed rgba(59,130,246,0.5); }
+.display-frame .el.selected { outline: 2px solid var(--accent); }
+.display-frame .el .resize-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border-radius: 2px;
+  cursor: nwse-resize;
+  display: none;
+}
+.display-frame .el.selected .resize-handle { display: block; }
+.display-frame .el-arc canvas { display: block; }
+
+.flash-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+}
+.flash-bar select, .flash-bar input {
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 11px;
+}
+.flash-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 9999;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+.flash-overlay.active { display: flex; }
+.flash-overlay .flash-log {
+  width: 700px;
+  max-width: 90vw;
+  height: 400px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.flash-overlay .flash-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.flash-overlay .flash-close {
+  margin-top: 12px;
+  padding: 8px 24px;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.snap-guide {
+  position: absolute;
+  background: #f43f5e;
+  pointer-events: none;
+  z-index: 999;
+  opacity: 0.7;
+}
+.snap-guide-h { height: 1px; left: 0; right: 0; }
+.snap-guide-v { width: 1px; top: 0; bottom: 0; }
+.snap-guide-spacing { background: rgba(59, 130, 246, 0.55); opacity: 1; }
+.center-guide {
+  position: absolute;
+  background: rgba(148, 163, 184, 0.35);
+  pointer-events: none;
+  z-index: 1;
+}
+.center-guide-h { height: 1px; left: 0; right: 0; top: 50%; }
+.center-guide-v { width: 1px; top: 0; bottom: 0; left: 50%; }
+.center-guide-dot {
+  position: absolute;
+  width: 6px; height: 6px;
+  left: 50%; top: 50%;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+.align-center-btns {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.align-center-btns button {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 10px;
+}
+.drag-tooltip {
+  position: absolute;
+  background: rgba(0,0,0,0.85);
+  color: #f43f5e;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  padding: 2px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 1000;
+  white-space: nowrap;
+  border: 1px solid #f43f5e;
+}
+
+.sidebar-right {
+  width: 280px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.sidebar-right .section-header { position: sticky; top: 0; z-index: 1; }
+.prop-group {
+  padding: 10px 14px;
+  border-bottom: 1px solid #1e293b;
+}
+.prop-group label {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.display-defaults-panel {
+  border-top: 2px solid var(--border);
+  background: #0f172a;
+}
+.display-defaults-panel .prop-group input[type="range"] {
+  width: 100%;
+  padding: 0;
+  height: 6px;
+  accent-color: #3b82f6;
+}
+.display-defaults-panel .range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.display-defaults-panel .range-val {
+  min-width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text);
+  font-family: monospace;
+}
+
+.prop-group input, .prop-group select {
+  width: 100%;
+  padding: 5px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.prop-group input[type="color"] { height: 28px; padding: 2px; cursor: pointer; }
+.prop-row { display: flex; gap: 6px; }
+.prop-row > div { flex: 1; }
+.no-selection {
+  padding: 30px 16px;
+  text-align: center;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.lang-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9000;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+}
+.lang-toggle:hover { background: var(--card); border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- LEFT SIDEBAR -->
+<div class="sidebar-left">
+  <div class="section-header" data-i18n="pages">Seiten</div>
+  <div id="page-tabs"></div>
+  <div class="page-btns">
+    <button class="btn-green" onclick="addPage()" data-i18n="addPage">+ Seite</button>
+    <button class="btn-blue" onclick="renamePage()" data-i18n="rename">Name</button>
+    <button class="btn-gray" onclick="duplicatePage()" data-i18n="duplicate">Kopie</button>
+    <button class="btn-red" onclick="deletePage()" data-i18n="delete">Löschen</button>
+  </div>
+
+  <div class="section-header">
+    <span data-i18n="onDisplay">Auf Display</span>
+    <span style="display:flex;gap:3px">
+      <button class="sm-btn btn-green" onclick="addElement()" data-i18n-title="addText" title="Text hinzufügen">+T</button>
+      <button class="sm-btn btn-blue" onclick="addArc()" data-i18n-title="addArc" title="Ring hinzufügen">+◌</button>
+    </span>
+  </div>
+  <div id="layer-list"></div>
+
+  <div class="section-header" data-i18n="systemFields">System-Felder</div>
+  <div id="system-field-list"></div>
+  <div class="section-header" data-i18n="endpointFields">Endpoint-Felder</div>
+  <div id="field-list"></div>
+</div>
+
+<!-- CENTER -->
+<div class="center">
+  <div class="toolbar">
+    <input type="text" id="endpoint" value="http://node.lan/msa2/status" placeholder="JSON Endpoint URL">
+    <button class="btn-green" onclick="startFetch()" data-i18n="load">Laden</button>
+    <button class="btn-red" onclick="stopFetch()" id="btn-stop" style="display:none" data-i18n="stop">Stop</button>
+    <button class="btn-gray" onclick="loadDemo()" data-i18n="demo">Demo</button>
+    <select id="template-select" onchange="applyTemplate(this.value)"></select>
+    <button class="btn-blue" onclick="exportLayout()" data-i18n="export">Export</button>
+    <button class="btn-gray" onclick="importLayout()" data-i18n="importBtn">Import</button>
+  </div>
+  <div class="flash-bar">
+    <select id="port-select" style="width:140px"><option value="" data-i18n="comPort">COM-Port...</option></select>
+    <button class="btn-gray" onclick="refreshPorts()" data-i18n-title="refreshPorts" title="Ports aktualisieren">&#x21bb;</button>
+    <button class="btn-blue" onclick="startBuild()" data-i18n="build">Build</button>
+    <button class="btn-green" onclick="startFlash()" data-i18n="flash">Flash</button>
+    <input type="text" id="esp-ip" value="192.168.4.1" data-i18n-placeholder="espIp" placeholder="ESP IP" style="width:120px">
+    <button class="btn-gray" onclick="pushArcColors()" data-i18n="pushColors">Farben senden</button>
+    <button class="btn-gray" onclick="pushDisplaySettings()" data-i18n="pushSettings">Einstellungen senden</button>
+  </div>
+  <div class="status-line" id="status" data-i18n="statusDefault">Felder laden via Endpoint oder Demo klicken</div>
+  <div class="display-frame" id="display"></div>
+</div>
+
+<!-- Flash overlay -->
+<div class="flash-overlay" id="flash-overlay">
+  <div class="flash-title" id="flash-title" data-i18n="flashTitle">Build / Flash</div>
+  <div class="flash-log" id="flash-log"></div>
+  <button class="flash-close btn-gray" id="flash-close" onclick="closeFlashOverlay()" data-i18n="close">Schließen</button>
+</div>
+
+<!-- RIGHT SIDEBAR -->
+<div class="sidebar-right">
+  <div class="section-header" data-i18n="boardPanel">Board / Display</div>
+  <div id="board-panel" class="display-defaults-panel"></div>
+  <div class="section-header" data-i18n="displayDefaults">Display-Standard</div>
+  <div id="display-defaults-panel" class="display-defaults-panel"></div>
+  <div class="section-header" data-i18n="properties">Eigenschaften</div>
+  <div id="props-panel">
+    <div class="no-selection" data-i18n-html="noSelection">Element auf dem Display anklicken<br>oder Feld aus der Liste ziehen</div>
+  </div>
+</div>
+
+<button type="button" class="lang-toggle" id="lang-toggle" onclick="toggleLang()" title="DE / EN">DE</button>
+
+<script>
+/* ── i18n (DE / EN) ── */
+const I18N = {
+  de: {
+    pages:'Seiten', addPage:'+ Seite', rename:'Name', duplicate:'Kopie', delete:'Löschen',
+    onDisplay:'Auf Display', addText:'Text hinzufügen', addArc:'Ring hinzufügen',
+    systemFields:'System-Felder', endpointFields:'Endpoint-Felder',
+    load:'Laden', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
+    comPort:'COM-Port...', refreshPorts:'Ports aktualisieren', build:'Build', flash:'Flash',
+    espIp:'ESP IP', pushColors:'Farben senden', pushSettings:'Einstellungen senden',
+    statusDefault:'Felder laden via Endpoint oder Demo klicken',
+    flashTitle:'Build / Flash', close:'Schließen',
+    boardPanel:'Board / Display', boardPreset:'Board-Vorlage', boardCustom:'Benutzerdefiniert',
+    boardWidth:'Breite (px)', boardHeight:'Höhe (px)', boardHint:'Firmware-Ziel: Waveshare 1.75\" = 466×466. Andere Größen nur für Layout-Vorschau / künftige Boards.',
+    firmwareTarget:'Firmware-Build',
+    displayDefaults:'Display-Standard', properties:'Eigenschaften',
+    noSelection:'Element auf dem Display anklicken<br>oder Feld aus der Liste ziehen',
+    brightness:'Helligkeit', contrast:'Kontrast', invertColors:'Farben invertieren',
+    screenOffAfter:'Bildschirm aus nach', applySystemPage:'System-Seite anlegen',
+    systemPageCreated:'System-Standardseite angelegt',
+    never:'Nie (aus)', neverShort:'Nie', normal:'Normal', inverted:'Invertiert',
+    pageDefault:'Seite', pageCopy:' (Kopie)',
+    tplPlaceholder:'Vorlage anwenden...', tplEnergy:'Energie-Ring', tplBattery:'Batterie-Details',
+    tplGrid:'Netz-Übersicht', tplMetrics:'Alle Werte (Liste)', tplSensors:'Sensoren',
+    tplSystem:'System-Info', tplSystemSettings:'System-Einstellungen',
+    tplDualRing:'Doppel-Ring', tplMsa2Full:'MSA2 Komplett (5 Seiten)',
+    fieldEmpty:'Noch keine Daten.<br>Endpoint laden oder Demo klicken.',
+    addTextBtn:'+ T', promptPageName:'Name:', promptRename:'Neuer Name:',
+    minOnePage:'Mindestens 1 Seite.', confirmDeletePage:'"{name}" löschen?',
+    confirmReplacePage:'Aktuelle Elemente auf dieser Seite ersetzen?',
+    confirmReplaceAll:'Alle Seiten mit dem MSA2-Layout ersetzen?',
+    confirmDeleteGroup:'Alle {n} Elemente der Gruppe löschen?',
+    elementsSelected:'{n} Elemente', alreadyGrouped:'Bereits gruppiert', ungroup:'Gruppe auflösen',
+    groupBtn:'🔗 Gruppieren', ctrlHint:'Strg+Klick zum Auswählen',
+    propsText:'Text', propsField:'Daten-Feld', propsSuffix:'Suffix', propsFontSize:'Schriftgröße',
+    propsFont:'Schriftart', propsWeight:'Gewicht', propsColor:'Farbe', propsAlign:'Ausrichtung',
+    propsFormat:'Format', alignLeft:'Links', alignCenter:'Mitte', alignRight:'Rechts',
+    alignToCenter:'Zur Mitte', centerH:'↔ Mitte', centerV:'↕ Mitte', centerBoth:'⊕ Mitte',
+    centerSnapHint:'Beim Ziehen: Einrasten an Display-Mitte (233) und Element-Mittelpunkt',
+    rowSpacing:'Zeilenabstand', distributeRows:'Gleichmäßig verteilen (Y)',
+    addRowSpacing:'+ Zeile (gleicher Abstand)', rowSpacingSnap:'Beim Ziehen: Einrasten auf bestehende Zeilen und Fortsetzung des Abstands',
+    rowSpacingNeedTwo:'Mindestens 2 Text-Elemente für Abstand',
+    fmtAuto:'Auto', fmtInt:'Ganzzahl', grouped:'🔗 Gruppiert', groupedWith:'Mit:',
+    groupedMoveHint:'Verschieben bewegt alle Elemente der Gruppe',
+    showRing:'◌ Ring anzeigen', ringStyle:'Ring-Stil', ringStandard:'Standard (mit Hintergrund)',
+    ringDynamic:'Dynamisch (nur Füllstand)', ringBg:'Hintergrund', colorMode:'Farbmodus',
+    colorStatic:'Statisch (eine Farbe)', colorThreshold:'Schwellwerte (3 Farben)',
+    colorGradient:'Gradient (Farbverlauf)', thresholds:'Schwellwerte', below:'darunter',
+    gradient:'Gradient', width:'Breite', height:'Höhe', strokeWidth:'Strichbreite',
+    min:'Min', max:'Max', ringColor:'Ring-Farbe',
+    sf_time:'Uhrzeit', sf_date:'Datum', sf_batteryIcon:'Batterie-Icon', sf_batteryPct:'Batterie %',
+    sf_wifi:'WiFi-Status', sf_ip:'IP-Adresse', sf_ap:'Setup-AP SSID', sf_uptime:'Letztes Update',
+    sf_fieldcount:'Anzahl Felder',
+    wifi_connected:'verbunden', wifi_disconnected:'getrennt', active:'aktiv',
+    pn_soc:'SoC', pn_bat_p:'Leistung', pn_bat_v:'Spannung', pn_bat_i:'Strom',
+    pn_bat_temp:'Temperatur', pn_bat_sts:'Status', pn_sys_pv_p:'PV', pn_sys_load_p:'Verbrauch',
+    pn_sys_grid_p:'Netz', pn_grid_p:'Netzleistung', pn_grid_v:'Spannung', pn_grid_i:'Strom',
+    pn_grid_f:'Frequenz', pn_rssi:'RSSI', pn__time:'Uhrzeit', pn__date:'Datum',
+    pn__battery_icon:'Batterie', pn__battery_pct:'Batterie %', pn__wifi:'WiFi',
+    pn__ip:'IP-Adresse', pn__ap_ssid:'Setup-AP', pn__uptime:'Letztes Update', pn__fieldcount:'Felder',
+    tpl_energy:'Energie', tpl_battery:'Batterie', tpl_grid:'Netz', tpl_overview:'Übersicht',
+    tpl_sensors:'Sensoren', tpl_system:'System', tpl_settings:'Einstellungen',
+    tpl_screenOff:'Bildschirm aus', tpl_wifi:'Wi-Fi', tpl_fields:'Felder', tpl_updated:'Aktualisiert',
+    tpl_power:'Leistung', tpl_voltage:'Spannung', tpl_current:'Strom', tpl_temp:'Temperatur',
+    tpl_status:'Status', tpl_freq:'Frequenz', tpl_consumption:'Verbrauch',
+    alertPorts:'Ports nur über den Python-Server verfügbar.\\nStarte: python tools/editor/server.py',
+    alertPortsFail:'Ports laden fehlgeschlagen: ', alertBuild:'Build nur über den Python-Server verfügbar.',
+    alertFlash:'Flash nur über den Python-Server verfügbar.', alertSelectPort:'Bitte zuerst einen COM-Port auswählen.',
+    alertPushSettings:'Einstellungen senden nur über den Python-Server verfügbar.',
+    alertEspIp:'ESP IP-Adresse eingeben.', alertPushColors:'Config-Push nur über den Python-Server verfügbar.',
+    alertNoArc:'Kein Ring-Element gefunden.', alertInvalidJson:'Ungültige JSON-Datei',
+    settingsSent:'Display-Einstellungen gesendet! Status: ', colorsSent:'Farben gesendet! Status: ',
+    errorPrefix:'Fehler: ', layoutSaved:'[layout] Editor-Layout gespeichert\n',
+    langBtn:'EN', langTitle:'Switch to English',
+  },
+  en: {
+    pages:'Pages', addPage:'+ Page', rename:'Rename', duplicate:'Copy', delete:'Delete',
+    onDisplay:'On display', addText:'Add text', addArc:'Add ring',
+    systemFields:'System fields', endpointFields:'Endpoint fields',
+    load:'Load', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
+    comPort:'COM port...', refreshPorts:'Refresh ports', build:'Build', flash:'Flash',
+    espIp:'ESP IP', pushColors:'Send colors', pushSettings:'Send settings',
+    statusDefault:'Load fields via endpoint or click Demo',
+    flashTitle:'Build / Flash', close:'Close',
+    boardPanel:'Board / display', boardPreset:'Board preset', boardCustom:'Custom size',
+    boardWidth:'Width (px)', boardHeight:'Height (px)', boardHint:'Firmware target: Waveshare 1.75\" = 466×466. Other sizes are for editor preview / future boards.',
+    firmwareTarget:'Firmware build',
+    displayDefaults:'Display defaults', properties:'Properties',
+    noSelection:'Click an element on the display<br>or drag a field from the list',
+    brightness:'Brightness', contrast:'Contrast', invertColors:'Invert colors',
+    screenOffAfter:'Screen off after', applySystemPage:'Create system page',
+    systemPageCreated:'System page created',
+    never:'Never (off)', neverShort:'Never', normal:'Normal', inverted:'Inverted',
+    pageDefault:'Page', pageCopy:' (copy)',
+    tplPlaceholder:'Apply template...', tplEnergy:'Energy ring', tplBattery:'Battery details',
+    tplGrid:'Grid overview', tplMetrics:'All values (list)', tplSensors:'Sensors',
+    tplSystem:'System info', tplSystemSettings:'System settings',
+    tplDualRing:'Dual ring', tplMsa2Full:'MSA2 complete (5 pages)',
+    fieldEmpty:'No data yet.<br>Load endpoint or click Demo.',
+    addTextBtn:'+ T', promptPageName:'Name:', promptRename:'New name:',
+    minOnePage:'At least one page required.', confirmDeletePage:'Delete "{name}"?',
+    confirmReplacePage:'Replace all elements on this page?',
+    confirmReplaceAll:'Replace all pages with MSA2 layout?',
+    confirmDeleteGroup:'Delete all {n} elements in the group?',
+    elementsSelected:'{n} elements', alreadyGrouped:'Already grouped', ungroup:'Ungroup',
+    groupBtn:'🔗 Group', ctrlHint:'Ctrl+click to multi-select',
+    propsText:'Text', propsField:'Data field', propsSuffix:'Suffix', propsFontSize:'Font size',
+    propsFont:'Font', propsWeight:'Weight', propsColor:'Color', propsAlign:'Alignment',
+    propsFormat:'Format', alignLeft:'Left', alignCenter:'Center', alignRight:'Right',
+    alignToCenter:'Align to center', centerH:'↔ Center H', centerV:'↕ Center V', centerBoth:'⊕ Center',
+    centerSnapHint:'While dragging: snap to display center (233) and element center',
+    rowSpacing:'Row spacing', distributeRows:'Distribute evenly (Y)',
+    addRowSpacing:'+ Row (same spacing)', rowSpacingSnap:'While dragging: snap to rows and continue spacing',
+    rowSpacingNeedTwo:'Need at least 2 text elements for spacing',
+    fmtAuto:'Auto', fmtInt:'Integer', grouped:'🔗 Grouped', groupedWith:'With:',
+    groupedMoveHint:'Moving moves all elements in the group',
+    showRing:'◌ Show ring', ringStyle:'Ring style', ringStandard:'Standard (with track)',
+    ringDynamic:'Dynamic (fill only)', ringBg:'Background', colorMode:'Color mode',
+    colorStatic:'Static (one color)', colorThreshold:'Thresholds (3 colors)',
+    colorGradient:'Gradient', thresholds:'Thresholds', below:'below',
+    gradient:'Gradient', width:'Width', height:'Height', strokeWidth:'Stroke width',
+    min:'Min', max:'Max', ringColor:'Ring color',
+    sf_time:'Time', sf_date:'Date', sf_batteryIcon:'Battery icon', sf_batteryPct:'Battery %',
+    sf_wifi:'WiFi status', sf_ip:'IP address', sf_ap:'Setup AP SSID', sf_uptime:'Last update',
+    sf_fieldcount:'Field count',
+    wifi_connected:'connected', wifi_disconnected:'disconnected', active:'active',
+    pn_soc:'SoC', pn_bat_p:'Power', pn_bat_v:'Voltage', pn_bat_i:'Current',
+    pn_bat_temp:'Temperature', pn_bat_sts:'Status', pn_sys_pv_p:'PV', pn_sys_load_p:'Load',
+    pn_sys_grid_p:'Grid', pn_grid_p:'Grid power', pn_grid_v:'Voltage', pn_grid_i:'Current',
+    pn_grid_f:'Frequency', pn_rssi:'RSSI', pn__time:'Time', pn__date:'Date',
+    pn__battery_icon:'Battery', pn__battery_pct:'Battery %', pn__wifi:'WiFi',
+    pn__ip:'IP address', pn__ap_ssid:'Setup AP', pn__uptime:'Last update', pn__fieldcount:'Fields',
+    tpl_energy:'Energy', tpl_battery:'Battery', tpl_grid:'Grid', tpl_overview:'Overview',
+    tpl_sensors:'Sensors', tpl_system:'System', tpl_settings:'Settings',
+    tpl_screenOff:'Screen off', tpl_wifi:'Wi-Fi', tpl_fields:'Fields', tpl_updated:'Updated',
+    tpl_power:'Power', tpl_voltage:'Voltage', tpl_current:'Current', tpl_temp:'Temperature',
+    tpl_status:'Status', tpl_freq:'Frequency', tpl_consumption:'Consumption',
+    alertPorts:'Ports only via Python server.\\nRun: python tools/editor/server.py',
+    alertPortsFail:'Failed to load ports: ', alertBuild:'Build only via Python server.',
+    alertFlash:'Flash only via Python server.', alertSelectPort:'Please select a COM port first.',
+    alertPushSettings:'Send settings only via Python server.',
+    alertEspIp:'Enter ESP IP address.', alertPushColors:'Config push only via Python server.',
+    alertNoArc:'No ring element found.', alertInvalidJson:'Invalid JSON file',
+    settingsSent:'Display settings sent! Status: ', colorsSent:'Colors sent! Status: ',
+    errorPrefix:'Error: ', layoutSaved:'[layout] Editor layout saved\n',
+    langBtn:'DE', langTitle:'Auf Deutsch wechseln',
+  },
+};
+
+let lang = localStorage.getItem('status_sphere_lang') || localStorage.getItem('msa2_lang') || 'de';
+if (lang !== 'de' && lang !== 'en') lang = 'de';
+
+function t(key, vars) {
+  let s = (I18N[lang] && I18N[lang][key]) || (I18N.de[key]) || key;
+  if (vars) Object.keys(vars).forEach(k => { s = s.replace(new RegExp('\\{'+k+'\\}','g'), vars[k]); });
+  return s;
+}
+
+function applyStaticI18n() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const v = t(el.dataset.i18n);
+    if (el.tagName === 'INPUT' || el.tagName === 'SELECT') return;
+    el.textContent = v;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.dataset.i18nHtml);
+  });
+  const lt = document.getElementById('lang-toggle');
+  if (lt) {
+    lt.textContent = t('langBtn');
+    lt.title = t('langTitle');
+  }
+  const st = document.getElementById('status');
+  if (st && !fetchTimer) st.textContent = t('statusDefault');
+}
+
+function setLang(l) {
+  lang = l;
+  localStorage.setItem('status_sphere_lang', lang);
+  applyStaticI18n();
+  renderTemplateSelect();
+  renderDisplayDefaultsPanel();
+  renderSystemFieldList();
+  renderAll();
+}
+
+function toggleLang() {
+  setLang(lang === 'de' ? 'en' : 'de');
+}
+
+function renderTemplateSelect() {
+  const sel = document.getElementById('template-select');
+  if (!sel) return;
+  const v = sel.value;
+  sel.innerHTML = `
+    <option value="">${t('tplPlaceholder')}</option>
+    <option value="energy">${t('tplEnergy')}</option>
+    <option value="battery">${t('tplBattery')}</option>
+    <option value="grid">${t('tplGrid')}</option>
+    <option value="metrics">${t('tplMetrics')}</option>
+    <option value="sensors">${t('tplSensors')}</option>
+    <option value="system">${t('tplSystem')}</option>
+    <option value="system-settings">${t('tplSystemSettings')}</option>
+    <option value="dual-ring">${t('tplDualRing')}</option>
+    <option value="msa2-full">${t('tplMsa2Full')}</option>`;
+  sel.value = v;
+}
+
+const BOARD_PRESETS = [
+  { id: 'waveshare-175', labelDe: 'Waveshare ESP32-S3 AMOLED 1.75" (466×466)', labelEn: 'Waveshare ESP32-S3 AMOLED 1.75" (466×466)', w: 466, h: 466, firmware: true },
+  { id: 'round-360', labelDe: 'Rundes AMOLED ~1.5" (360×360)', labelEn: 'Round AMOLED ~1.5" (360×360)', w: 360, h: 360, firmware: false },
+  { id: 'custom', labelDe: 'Benutzerdefiniert…', labelEn: 'Custom…', w: 466, h: 466, firmware: false },
+];
+const FIRMWARE_BOARD = BOARD_PRESETS.find(b => b.firmware) || BOARD_PRESETS[0];
+
+let layoutMeta = {
+  boardId: FIRMWARE_BOARD.id,
+  boardLabel: FIRMWARE_BOARD.labelDe,
+  width: FIRMWARE_BOARD.w,
+  height: FIRMWARE_BOARD.h,
+};
+
+function dispW() { return layoutMeta.width; }
+function dispH() { return layoutMeta.height; }
+function dispCenterX() { return dispW() / 2; }
+function dispCenterY() { return dispH() / 2; }
+
+function applyDisplayFrameSize() {
+  const frame = document.getElementById('display');
+  if (!frame) return;
+  const px = dispW() + 'px';
+  frame.style.width = px;
+  frame.style.height = px;
+  document.documentElement.style.setProperty('--display-size', px);
+}
+
+const FONTS = ['Dosis','system-ui','monospace','serif','sans-serif'];
+const FONT_WEIGHTS = ['400','600','700'];
+
+function screenOffOptions() {
+  return [
+    { value: 10, label: '10 s' },
+    { value: 15, label: '15 s' },
+    { value: 30, label: '30 s' },
+    { value: 60, label: '60 s' },
+    { value: 120, label: '120 s' },
+    { value: 0, label: t('never') },
+  ];
+}
+
+let displayDefaults = {
+  brightness: 80,
+  contrast: 50,
+  invert: false,
+  screenOff: 60,
+};
+
+let pages = [];
+let currentPageIdx = 0;
+let selectedId = null;
+let selectedIds = new Set();
+let fetchTimer = null;
+let liveData = null;
+let idCounter = 1;
+
+function uid() { return 'el_'+(idCounter++); }
+
+function emptyPages() {
+  return [{ name: t('pageDefault') + ' 1', elements: [] }];
+}
+
+function loadDisplayDefaults() {
+  try {
+    const d = JSON.parse(localStorage.getItem('status_sphere_display_defaults') || localStorage.getItem('msa2_display_defaults'));
+    if (d) displayDefaults = { ...displayDefaults, ...d };
+  } catch (e) { /* ignore */ }
+  displayDefaults.brightness = Math.max(0, Math.min(100, displayDefaults.brightness|0));
+  displayDefaults.contrast = Math.max(0, Math.min(100, displayDefaults.contrast|0));
+}
+
+function saveDisplayDefaults() {
+  localStorage.setItem('status_sphere_display_defaults', JSON.stringify(displayDefaults));
+}
+
+function formatScreenOff(sec) {
+  return sec === 0 ? t('neverShort') : sec + ' s';
+}
+
+function settingValueText(key) {
+  switch (key) {
+    case 'brightness': return displayDefaults.brightness + '%';
+    case 'contrast': return displayDefaults.contrast + '%';
+    case 'invert': return displayDefaults.invert ? t('inverted') : t('normal');
+    case 'screenOff': return formatScreenOff(displayDefaults.screenOff);
+    default: return '--';
+  }
+}
+
+function refreshSystemSettingsLabels() {
+  let changed = false;
+  curElements().forEach(el => {
+    if (el._settingKey) {
+      const t = settingValueText(el._settingKey);
+      if (el.text !== t) { el.text = t; changed = true; }
+    }
+  });
+  if (changed) { save(); renderDisplay(); }
+}
+
+function renderDisplayDefaultsPanel() {
+  const panel = document.getElementById('display-defaults-panel');
+  if (!panel) return;
+  const offOpts = screenOffOptions().map(o =>
+    `<option value="${o.value}"${displayDefaults.screenOff===o.value?' selected':''}>${o.label}</option>`
+  ).join('');
+  panel.innerHTML = `
+    <div class="prop-group">
+      <label>${t('brightness')}</label>
+      <div class="range-row">
+        <input type="range" id="dd-bright" min="0" max="100" value="${displayDefaults.brightness}">
+        <span class="range-val" id="dd-bright-val">${displayDefaults.brightness}%</span>
+      </div>
+    </div>
+    <div class="prop-group">
+      <label>${t('contrast')}</label>
+      <div class="range-row">
+        <input type="range" id="dd-contrast" min="0" max="100" value="${displayDefaults.contrast}">
+        <span class="range-val" id="dd-contrast-val">${displayDefaults.contrast}%</span>
+      </div>
+    </div>
+    <div class="prop-group">
+      <label>Invert</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="dd-invert" ${displayDefaults.invert?'checked':''} style="width:auto;margin:0;accent-color:#3b82f6">
+        ${t('invertColors')}
+      </label>
+    </div>
+    <div class="prop-group">
+      <label>${t('screenOffAfter')}</label>
+      <select id="dd-off">${offOpts}</select>
+    </div>
+    <div class="prop-group" style="padding-top:4px">
+      <button class="btn-blue sm-btn" style="width:100%;padding:8px;font-size:12px" onclick="applySystemSettingsPage()">${t('applySystemPage')}</button>
+    </div>`;
+
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', fn);
+  };
+  bind('dd-bright', () => {
+    displayDefaults.brightness = +document.getElementById('dd-bright').value;
+    document.getElementById('dd-bright-val').textContent = displayDefaults.brightness + '%';
+    saveDisplayDefaults(); refreshSystemSettingsLabels();
+  });
+  bind('dd-contrast', () => {
+    displayDefaults.contrast = +document.getElementById('dd-contrast').value;
+    document.getElementById('dd-contrast-val').textContent = displayDefaults.contrast + '%';
+    saveDisplayDefaults(); refreshSystemSettingsLabels();
+  });
+  document.getElementById('dd-invert').addEventListener('change', e => {
+    displayDefaults.invert = e.target.checked;
+    saveDisplayDefaults(); refreshSystemSettingsLabels();
+  });
+  document.getElementById('dd-off').addEventListener('change', e => {
+    displayDefaults.screenOff = +e.target.value;
+    saveDisplayDefaults(); refreshSystemSettingsLabels();
+  });
+}
+
+function applySystemSettingsPage() {
+  const name = t('tpl_system');
+  let idx = pages.findIndex(p => p.name === name || p.name === 'System' || p.name === 'System-Einstellungen');
+  if (idx < 0) {
+    pages.push({ name, elements: [] });
+    idx = pages.length - 1;
+  }
+  pages[idx].name = name;
+  pages[idx].elements = buildTemplate('system-settings');
+  save();
+  switchPage(idx);
+  document.getElementById('status').textContent = t('systemPageCreated');
+}
+
+/* ── Init ── */
+function loadLayoutMetaFromObject(obj) {
+  if (!obj || !obj.display) return;
+  const d = obj.display;
+  layoutMeta.width = Math.max(120, Math.min(800, d.width|0)) || layoutMeta.width;
+  layoutMeta.height = Math.max(120, Math.min(800, d.height|0)) || layoutMeta.height;
+  layoutMeta.boardId = d.boardId || layoutMeta.boardId;
+  layoutMeta.boardLabel = d.boardLabel || layoutMeta.boardLabel;
+}
+
+function init() {
+  loadDisplayDefaults();
+  const saved = localStorage.getItem('status_sphere_layout_v3') || localStorage.getItem('msa2_layout_v2');
+  if (saved) {
+    try {
+      const p = JSON.parse(saved);
+      pages = p.pages || p;
+      idCounter = p.idCounter || 100;
+      if (p.locale === 'en' || p.locale === 'de') lang = p.locale;
+      loadLayoutMetaFromObject(p);
+    } catch(e) { pages = emptyPages(); }
+  } else {
+    pages = emptyPages();
+  }
+  applyDisplayFrameSize();
+  renderAll();
+}
+
+function layoutExportObject() {
+  return {
+    display: { ...layoutMeta },
+    pages,
+    idCounter,
+    locale: lang,
+    displayDefaults,
+  };
+}
+
+function save() {
+  localStorage.setItem('status_sphere_layout_v3', JSON.stringify(layoutExportObject()));
+}
+
+function renderBoardPanel() {
+  const panel = document.getElementById('board-panel');
+  if (!panel) return;
+  const opts = BOARD_PRESETS.map(b => {
+    const lab = lang === 'en' ? b.labelEn : b.labelDe;
+    return `<option value="${b.id}"${b.id===layoutMeta.boardId?' selected':''}>${lab}</option>`;
+  }).join('');
+  const custom = layoutMeta.boardId === 'custom';
+  const fw = layoutMeta.width === FIRMWARE_BOARD.w && layoutMeta.height === FIRMWARE_BOARD.h;
+  panel.innerHTML = `
+    <div class="prop-group">
+      <label>${t('boardPreset')}</label>
+      <select id="board-preset">${opts}</select>
+    </div>
+    <div class="prop-row" style="margin-top:6px">
+      <div><label>${t('boardWidth')}</label><input id="board-w" type="number" min="120" max="800" value="${layoutMeta.width}" ${custom?'':'disabled'}></div>
+      <div><label>${t('boardHeight')}</label><input id="board-h" type="number" min="120" max="800" value="${layoutMeta.height}" ${custom?'':'disabled'}></div>
+    </div>
+    <div style="font-size:10px;color:${fw?'#22c55e':'#f59e0b'};margin-top:6px;line-height:1.4">
+      ${t('firmwareTarget')}: ${FIRMWARE_BOARD.w}×${FIRMWARE_BOARD.h}${fw ? ' ✓' : ' — ' + layoutMeta.width + '×' + layoutMeta.height}
+    </div>
+    <div style="font-size:10px;color:#475569;margin-top:4px;line-height:1.35">${t('boardHint')}</div>`;
+
+  document.getElementById('board-preset').addEventListener('change', e => {
+    const id = e.target.value;
+    const preset = BOARD_PRESETS.find(b => b.id === id) || FIRMWARE_BOARD;
+    layoutMeta.boardId = id;
+    layoutMeta.boardLabel = lang === 'en' ? preset.labelEn : preset.labelDe;
+    if (id !== 'custom') {
+      layoutMeta.width = preset.w;
+      layoutMeta.height = preset.h;
+    }
+    applyDisplayFrameSize();
+    save();
+    renderAll();
+  });
+  const onCustomDim = () => {
+    if (layoutMeta.boardId !== 'custom') return;
+    layoutMeta.width = Math.max(120, Math.min(800, +document.getElementById('board-w').value || dispW()));
+    layoutMeta.height = Math.max(120, Math.min(800, +document.getElementById('board-h').value || dispH()));
+    applyDisplayFrameSize();
+    save();
+    renderBoardPanel();
+    renderDisplay();
+  };
+  const bw = document.getElementById('board-w');
+  const bh = document.getElementById('board-h');
+  if (bw) bw.addEventListener('change', onCustomDim);
+  if (bh) bh.addEventListener('change', onCustomDim);
+}
+
+function renderAll() {
+  applyStaticI18n();
+  renderBoardPanel();
+  renderPageTabs();
+  renderDisplay();
+  renderLayerList();
+  renderFieldList();
+  renderSystemFieldList();
+  renderDisplayDefaultsPanel();
+  renderProps();
+}
+
+/* ── Pages ── */
+function addPage() {
+  const name = prompt(t('promptPageName'), t('pageDefault')+' '+(pages.length+1));
+  if (!name) return;
+  pages.push({ name, elements: [] });
+  save(); switchPage(pages.length-1);
+}
+function renamePage() {
+  const name = prompt(t('promptRename'), curPage().name);
+  if (!name) return;
+  curPage().name = name;
+  save(); renderPageTabs();
+}
+function deletePage() {
+  if (pages.length<=1) { alert(t('minOnePage')); return; }
+  if (!confirm(t('confirmDeletePage', {name: curPage().name}))) return;
+  pages.splice(currentPageIdx,1);
+  if (currentPageIdx>=pages.length) currentPageIdx=pages.length-1;
+  save(); switchPage(currentPageIdx);
+}
+function duplicatePage() {
+  const c = JSON.parse(JSON.stringify(curPage()));
+  c.name += t('pageCopy');
+  c.elements.forEach(e => e.id=uid());
+  pages.splice(currentPageIdx+1,0,c);
+  save(); switchPage(currentPageIdx+1);
+}
+
+function renderPageTabs() {
+  const c = document.getElementById('page-tabs');
+  c.innerHTML = '';
+  pages.forEach((p,i) => {
+    const d = document.createElement('div');
+    d.className = 'page-tab'+(i===currentPageIdx?' active':'');
+    d.innerHTML = `<span>${esc(p.name)}</span><span style="font-size:10px;opacity:0.5">${p.elements.length}</span>`;
+    d.onclick = () => switchPage(i);
+    c.appendChild(d);
+  });
+}
+
+function switchPage(idx) {
+  currentPageIdx = idx;
+  selectedId = null;
+  selectedIds.clear();
+  renderAll();
+}
+function curPage() { return pages[currentPageIdx]; }
+function curElements() { return curPage().elements; }
+function findEl(id) { return curElements().find(e=>e.id===id); }
+
+/* ── Layer list (on display) ── */
+function renderLayerList() {
+  const c = document.getElementById('layer-list');
+  c.innerHTML = '';
+  if (curElements().length === 0) {
+    c.innerHTML = '<div class="field-empty">Leer — Felder hierhin ziehen<br>oder Vorlage wählen</div>';
+    return;
+  }
+  curElements().forEach(el => {
+    const d = document.createElement('div');
+    d.className = 'layer-item'+(el.id===selectedId?' selected':'');
+    const lbl = el.type==='arc' ? `◌ Ring (${el.field||'arc'})` : `T "${(el.text||'').substring(0,16)}"`;
+    const grpIcon = el._group ? '<span title="Gruppiert" style="color:#3b82f6;font-size:10px">🔗</span>' : '';
+    d.innerHTML = `<span>${grpIcon}${lbl}</span><span style="display:flex;gap:2px"><button class="del-btn" title="Kopieren" style="color:#3b82f6">⧉</button><button class="del-btn" title="Löschen">✕</button></span>`;
+    const btns = d.querySelectorAll('.del-btn');
+    btns[0].onclick = ev => { ev.stopPropagation(); duplicateElement(el.id); };
+    btns[1].onclick = ev => { ev.stopPropagation(); deleteElement(el.id); };
+    d.onclick = ev => selectElement(el.id, ev);
+    c.appendChild(d);
+  });
+}
+
+/* ── System field list (always available) ── */
+function getSystemFields() {
+  const loc = lang === 'en' ? 'en-GB' : 'de-DE';
+  return [
+    { key:'_time',         label:t('sf_time'),       icon:'🕐', preview:() => new Date().toLocaleTimeString(loc,{hour:'2-digit',minute:'2-digit'}) },
+    { key:'_date',         label:t('sf_date'),        icon:'📅', preview:() => new Date().toLocaleDateString(loc) },
+    { key:'_battery_icon', label:t('sf_batteryIcon'), icon:'🔋', preview:() => '🔋', isIcon:true },
+    { key:'_battery_pct',  label:t('sf_batteryPct'),  icon:'🔋', preview:() => '85%' },
+    { key:'_wifi',         label:t('sf_wifi'),        icon:'📶', preview:() => t('wifi_connected') },
+    { key:'_ip',           label:t('sf_ip'),          icon:'🌐', preview:() => '192.168.1.42' },
+    { key:'_ap_ssid',      label:t('sf_ap'),          icon:'📡', preview:() => 'StatusSphere-Setup' },
+    { key:'_uptime',       label:t('sf_uptime'),      icon:'⏱️', preview:() => t('active') },
+    { key:'_fieldcount',   label:t('sf_fieldcount'),  icon:'#️⃣', preview:() => '12' },
+  ];
+}
+function renderSystemFieldList() {
+  const c = document.getElementById('system-field-list');
+  c.innerHTML = '';
+  getSystemFields().forEach(sf => {
+    const d = document.createElement('div');
+    d.className = 'field-item';
+    d.draggable = true;
+    d.dataset.field = sf.key;
+    d.innerHTML = `<span class="f-name">${sf.icon} ${esc(sf.label)}</span><span class="f-val">${esc(sf.preview())}</span>`;
+    d.addEventListener('dragstart', ev => {
+      ev.dataTransfer.setData('text/plain', sf.key);
+      ev.dataTransfer.effectAllowed = 'copy';
+    });
+    d.onclick = () => addSystemField(sf.key);
+    c.appendChild(d);
+  });
+}
+function addSystemField(key) {
+  const sf = getSystemFields().find(f => f.key===key);
+  if (!sf) return;
+  const gid = 'g_'+(idCounter++);
+  if (sf.isIcon) {
+    const el = {
+      id: uid(), type:'label', x:233, y:40, text:sf.preview(),
+      fontSize: 30, fontFamily:'MDI', fontWeight:'400',
+      color:'#ffffff', anchor:'middle', field:key, suffix:'', format:''
+    };
+    curElements().push(el);
+  } else {
+    const lbl = makeLabelText(key, 120, 200, gid);
+    lbl.text = sf.label;
+    const val = makeValueText(key, 120, 200, gid);
+    curElements().push(lbl);
+    curElements().push(val);
+  }
+  save(); renderDisplay(); renderLayerList();
+}
+
+/* ── Field list (available from endpoint) ── */
+function renderFieldList() {
+  const c = document.getElementById('field-list');
+  c.innerHTML = '';
+  if (!liveData || Object.keys(liveData).length===0) {
+    c.innerHTML = '<div class="field-empty">'+t('fieldEmpty')+'</div>';
+    return;
+  }
+  Object.entries(liveData).forEach(([key, obj]) => {
+    const d = document.createElement('div');
+    d.className = 'field-item';
+    d.draggable = true;
+    d.dataset.field = key;
+    const v = obj?.value;
+    const vStr = v==null?'--': typeof v==='boolean'?(v?'ja':'nein'): typeof v==='number'?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1)): String(v);
+    d.innerHTML = `<span class="f-name">${esc(key)}</span><span class="f-val">${esc(vStr)}</span><button class="f-add" title="${t('addText')}">${t('addTextBtn')}</button>`;
+    d.querySelector('.f-add').onclick = ev => { ev.stopPropagation(); addFieldAsLabel(key); };
+    d.addEventListener('dragstart', ev => {
+      ev.dataTransfer.setData('text/plain', key);
+      ev.dataTransfer.effectAllowed = 'copy';
+    });
+    c.appendChild(d);
+  });
+}
+
+/* ── Drop onto display ── */
+function initDrop() {
+  const disp = document.getElementById('display');
+  disp.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect='copy'; disp.classList.add('drop-hover'); });
+  disp.addEventListener('dragleave', () => disp.classList.remove('drop-hover'));
+  disp.addEventListener('drop', ev => {
+    ev.preventDefault();
+    disp.classList.remove('drop-hover');
+    const field = ev.dataTransfer.getData('text/plain');
+    if (!field) return;
+    const rect = disp.getBoundingClientRect();
+    const x = Math.round(ev.clientX - rect.left);
+    const y = Math.round(ev.clientY - rect.top);
+    const gid = 'g_'+(idCounter++);
+    const labelEl = makeLabelText(field, x, y, gid);
+    const valueEl = makeValueText(field, x, y, gid);
+    curElements().push(labelEl);
+    curElements().push(valueEl);
+    save(); renderDisplay(); renderLayerList();
+    selectElement(valueEl.id);
+  });
+}
+
+function makeLabelText(field, x, y, groupId) {
+  return {
+    id: uid(), type:'label', x, y, text: prettyName(field),
+    fontSize: 20, fontFamily:'Dosis', fontWeight:'400',
+    color:'#94a3b8', anchor:'start', field:'', suffix:'', format:'',
+    _group: groupId||null
+  };
+}
+function makeValueText(field, x, y, groupId) {
+  const suffix = guessUnit(field);
+  return {
+    id: uid(), type:'label', x: x+200, y, text: '--',
+    fontSize: 20, fontFamily:'Dosis', fontWeight:'600',
+    color:'#ffffff', anchor:'end', field, suffix, format:'',
+    _group: groupId||null
+  };
+}
+function prettyName(field) {
+  const k = 'pn_' + field;
+  const tr = t(k);
+  return tr !== k ? tr : field;
+}
+
+function guessUnit(field) {
+  if (/_p$|_power|load|pv|grid_p/.test(field)) return ' W';
+  if (/_v$|volt/.test(field)) return ' V';
+  if (/_i$|current/.test(field)) return ' A';
+  if (/_f$|freq/.test(field)) return ' Hz';
+  if (/temp/.test(field)) return ' °C';
+  if (/hum/.test(field)) return ' %';
+  if (/soc/.test(field)) return '%';
+  if (/rssi/.test(field)) return ' dBm';
+  return '';
+}
+
+function addFieldAsLabel(field) {
+  const y = 100 + Math.floor(curElements().length/2)*34;
+  const gid = 'g_'+(idCounter++);
+  const labelEl = makeLabelText(field, 120, y, gid);
+  const valueEl = makeValueText(field, 120, y, gid);
+  valueEl.x = 346;
+  curElements().push(labelEl);
+  curElements().push(valueEl);
+  save(); renderDisplay(); renderLayerList();
+  selectElement(valueEl.id);
+}
+
+/* ── Templates ── */
+function applyTemplate(name) {
+  document.getElementById('template-select').value = '';
+  if (!name) return;
+  if (name==='msa2-full') { applyFullLayout(); return; }
+  if (curElements().length>0 && !confirm(t('confirmReplacePage'))) return;
+  curPage().elements = buildTemplate(name);
+  save(); selectedId=null; renderDisplay(); renderLayerList(); renderProps();
+}
+
+function applyFullLayout() {
+  if (pages.some(p=>p.elements.length>0) && !confirm(t('confirmReplaceAll'))) return;
+  pages = [
+    { name: t('tpl_energy'), elements: buildTemplate('energy') },
+    { name: t('tpl_battery'), elements: buildTemplate('battery') },
+    { name: t('tpl_grid'), elements: buildTemplate('grid') },
+    { name: t('tpl_sensors'), elements: buildTemplate('sensors') },
+    { name: t('tpl_system'), elements: buildTemplate('system-settings') },
+  ];
+  if (!liveData) loadDemo();
+  save(); switchPage(0);
+}
+
+function buildTemplate(name) {
+  const els = [];
+  const add = (type, props) => { els.push({ id:uid(), type, ...props }); };
+  const lbl = (x,y,text,fs,fw,col,anchor,field,suffix,fmt) =>
+    add('label',{x,y,text,fontSize:fs,fontFamily:'Dosis',fontWeight:fw,color:col,anchor:anchor||'middle',field:field||'',suffix:suffix||'',format:fmt||''});
+  const row = (y,label,field,suffix) => {
+    lbl(120,y,label,16,'400','#94a3b8','start','','');
+    lbl(346,y,'--',22,'600','#ffffff','end',field,suffix||'');
+  };
+
+  if (name==='energy') {
+    add('arc',{x:0,y:0,w:dispW(),h:dispH(),strokeWidth:22,bgColor:'#1a1a1a',color:'#00ff00',field:'soc',min:0,max:100});
+    lbl(233,48,t('tpl_energy'),28,'600','#ffffff');
+    lbl(233,200,'--%',40,'700','#ffffff','middle','soc','%','int');
+    lbl(233,245,t('pn_soc'),16,'400','#94a3b8');
+    row(310,t('pn_sys_pv_p'),'sys_pv_p',' W');
+    row(344,t('tpl_consumption'),'sys_load_p',' W');
+    row(378,t('pn_sys_grid_p'),'sys_grid_p',' W');
+    row(410,t('tpl_battery'),'bat_p',' W');
+  } else if (name==='battery') {
+    lbl(233,48,t('tpl_battery'),28,'600','#ffffff');
+    row(110,t('pn_soc'),'soc',' %');
+    row(154,t('tpl_power'),'bat_p',' W');
+    row(198,t('tpl_voltage'),'bat_v',' V');
+    row(242,t('tpl_current'),'bat_i',' A');
+    row(286,t('tpl_temp'),'bat_temp',' °C');
+    row(330,t('tpl_status'),'bat_sts','');
+  } else if (name==='grid') {
+    lbl(233,48,t('tpl_grid'),28,'600','#ffffff');
+    row(110,t('tpl_power'),'grid_p',' W');
+    row(154,t('tpl_voltage'),'grid_v',' V');
+    row(198,t('tpl_current'),'grid_i',' A');
+    row(242,t('tpl_freq'),'grid_f',' Hz');
+    row(286,t('pn_rssi'),'rssi',' dBm');
+  } else if (name==='metrics') {
+    lbl(233,48,t('tpl_overview'),28,'600','#ffffff');
+    const fields = liveData ? Object.keys(liveData) : ['soc','bat_p','sys_pv_p','sys_load_p','sys_grid_p'];
+    let y = 100;
+    for (const f of fields.slice(0, 8)) {
+      row(y, f, f, guessUnit(f));
+      y += 44;
+    }
+  } else if (name==='dual-ring') {
+    add('arc',{x:0,y:0,w:dispW(),h:dispH(),strokeWidth:18,bgColor:'#1a1a1a',color:'#00ff00',field:'soc',min:0,max:100});
+    add('arc',{x:28,y:28,w:410,h:410,strokeWidth:14,bgColor:'#1a1a1a',color:'#3b82f6',field:'sys_pv_p',min:0,max:5000});
+    lbl(233,170,'SoC',14,'400','#94a3b8');
+    lbl(233,195,'--%',36,'700','#00ff00','middle','soc','%','int');
+    lbl(233,255,'PV',14,'400','#94a3b8');
+    lbl(233,280,'-- W',30,'700','#3b82f6','middle','sys_pv_p',' W');
+  } else if (name==='sensors') {
+    lbl(233,48,t('tpl_sensors'),28,'600','#ffffff');
+    lbl(233,110,'Shelly H&T 1',18,'600','#22c55e');
+    lbl(233,135,'Temp: --°C  Feuchte: --%',14,'400','#94a3b8','middle','_sensor_ht');
+    lbl(233,190,'Shelly H&T 2',18,'600','#666666');
+    lbl(233,215,'offline',14,'400','#475569','middle','_sensor_ht2');
+    lbl(233,270,'Shelly H&T 3',18,'600','#666666');
+    lbl(233,295,'offline',14,'400','#475569','middle','_sensor_ht3');
+    lbl(233,350,'Shelly H&T 4',18,'600','#666666');
+    lbl(233,375,'offline',14,'400','#475569','middle','_sensor_ht4');
+  } else if (name==='system') {
+    lbl(233,48,t('tpl_system'),28,'600','#ffffff');
+    row(110,t('tpl_wifi'),'_wifi','');
+    row(154,t('tpl_fields'),'_fieldcount','');
+    row(198,t('tpl_updated'),'_time','');
+  } else if (name==='system-settings') {
+    lbl(233,40,t('tpl_system'),28,'600','#ffffff');
+    lbl(233,72,t('tpl_settings'),16,'400','#94a3b8');
+    const settingRow = (y, label, key) => {
+      lbl(100,y,label,16,'400','#94a3b8','start','','');
+      const v = { id:uid(), type:'label', x:366, y:y-4, text:settingValueText(key),
+        fontSize:22, fontFamily:'Dosis', fontWeight:'600', color:'#ffffff', anchor:'end',
+        field:'', suffix:'', format:'', _settingKey:key };
+      els.push(v);
+    };
+    settingRow(120,t('brightness'),'brightness');
+    settingRow(168,t('contrast'),'contrast');
+    settingRow(216,'Invert','invert');
+    settingRow(264,t('tpl_screenOff'),'screenOff');
+    row(320,t('tpl_wifi'),'_wifi','');
+    row(364,t('tpl_fields'),'_fieldcount','');
+  }
+  return els;
+}
+
+
+function appendCenterGuides(display) {
+  const gh = document.createElement('div');
+  gh.className = 'center-guide center-guide-h';
+  const gv = document.createElement('div');
+  gv.className = 'center-guide center-guide-v';
+  const dot = document.createElement('div');
+  dot.className = 'center-guide-dot';
+  display.appendChild(gh);
+  display.appendChild(gv);
+  display.appendChild(dot);
+}
+
+function measureElementBox(el, div) {
+  if (el.type === 'arc') {
+    return { w: el.w, h: el.h, cxOff: el.w / 2, cyOff: el.h / 2 };
+  }
+  const w = div ? div.offsetWidth : 40;
+  const h = div ? div.offsetHeight : previewFontPx(el.fontSize);
+  let cxOff = w / 2;
+  if (el.anchor === 'middle') cxOff = 0;
+  else if (el.anchor === 'end') cxOff = -w / 2;
+  return { w, h, cxOff, cyOff: h / 2 };
+}
+
+function alignElementCenter(el, mode, div) {
+  const box = measureElementBox(el, div);
+  if (mode === 'h' || mode === 'both') {
+    el.x = Math.round(dispCenterX() - box.cxOff);
+  }
+  if (mode === 'v' || mode === 'both') {
+    el.y = Math.round(dispCenterY() - box.cyOff);
+  }
+  renderDisplay();
+  save();
+  updateProps();
+}
+
+function centerAlignButtonsHtml() {
+  return `<div class="prop-group" style="margin-top:4px">
+    <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">${t('alignToCenter')}</label>
+    <div class="align-center-btns">
+      <button type="button" class="sm-btn btn-gray" onclick="alignSelectedCenter('h')">${t('centerH')}</button>
+      <button type="button" class="sm-btn btn-gray" onclick="alignSelectedCenter('v')">${t('centerV')}</button>
+      <button type="button" class="sm-btn btn-blue" onclick="alignSelectedCenter('both')">${t('centerBoth')}</button>
+    </div>
+    <div style="font-size:10px;color:#475569;margin-top:4px">${t('centerSnapHint')}</div>
+  </div>`;
+}
+
+function alignSelectedCenter(mode) {
+  if (!selectedId) return;
+  const el = findEl(selectedId);
+  if (!el) return;
+  const div = document.querySelector(`#display [data-id="${el.id}"]`);
+  alignElementCenter(el, mode, div);
+}
+
+/* ── Display render ── */
+function renderDisplay() {
+  const display = document.getElementById('display');
+  display.innerHTML = '';
+  appendCenterGuides(display);
+  if (curElements().length===0) {
+    const hint = document.createElement('div');
+    hint.className = 'empty-hint';
+    hint.innerHTML = t('fieldEmpty');
+    display.appendChild(hint);
+    return;
+  }
+  curElements().forEach(el => {
+    if (el.type==='arc') renderArc(display, el);
+    else renderLabel(display, el);
+  });
+}
+
+function renderArc(parent, el) {
+  const w = document.createElement('div');
+  w.className = 'el el-arc'+(el.id===selectedId?' selected':'');
+  w.dataset.id = el.id;
+  w.style.left = el.x+'px';
+  w.style.top = el.y+'px';
+  w.style.width = el.w+'px';
+  w.style.height = el.h+'px';
+
+  const cv = document.createElement('canvas');
+  cv.width = el.w; cv.height = el.h;
+  w.appendChild(cv);
+
+  const rh = document.createElement('div');
+  rh.className = 'resize-handle';
+  w.appendChild(rh);
+
+  setupDrag(w, el);
+  setupResize(rh, el, () => { cv.width=el.w; cv.height=el.h; drawArc(cv,el); });
+  w.addEventListener('pointerdown', ev => { if(!ev.target.classList.contains('resize-handle')) selectElement(el.id, ev); });
+  parent.appendChild(w);
+  drawArc(cv, el);
+}
+
+function arcColor(el, pct) {
+  const cm = el.colorMode || 'static';
+  if (cm==='static') return el.color||'#00ff00';
+  if (cm==='threshold') {
+    const t = el.thresholds || {high:60,mid:25,colorHigh:'#00ff00',colorMid:'#ffa500',colorLow:'#ff3333'};
+    const pctVal = pct*100;
+    if (pctVal>=t.high) return t.colorHigh;
+    if (pctVal>=t.mid) return t.colorMid;
+    return t.colorLow;
+  }
+  if (cm==='gradient') {
+    return lerpColor(el.gradientStart||'#ff3333', el.gradientEnd||'#00ff00', pct);
+  }
+  return el.color||'#00ff00';
+}
+
+function lerpColor(a, b, t) {
+  const pa=parseInt(a.slice(1),16), pb=parseInt(b.slice(1),16);
+  const ra=(pa>>16)&0xff, ga=(pa>>8)&0xff, ba2=pa&0xff;
+  const rb=(pb>>16)&0xff, gb=(pb>>8)&0xff, bb=pb&0xff;
+  const r=Math.round(ra+(rb-ra)*t), g=Math.round(ga+(gb-ga)*t), b2=Math.round(ba2+(bb-ba2)*t);
+  return '#'+((1<<24)|(r<<16)|(g<<8)|b2).toString(16).slice(1);
+}
+
+function drawArc(cv, el) {
+  const ctx = cv.getContext('2d');
+  const w=cv.width, h=cv.height;
+  if(!w||!h) return;
+  ctx.clearRect(0,0,w,h);
+  const sw = el.strokeWidth||20;
+  const cx=w/2, cy=h/2, r=Math.min(w,h)/2-sw/2-2;
+  if(r<=0) return;
+
+  const isDynamic = el.ringStyle==='dynamic';
+  if (!isDynamic) {
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,degRad(135),degRad(405));
+    ctx.strokeStyle = el.bgColor||'#1a1a1a';
+    ctx.lineWidth = sw;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  const mn=el.min??0, mx=el.max??100;
+  let val=mn;
+  if (liveData&&el.field) {
+    const f=liveData[el.field];
+    if (f&&f.value!=null&&typeof f.value==='number') val=Math.max(mn,Math.min(mx,f.value));
+  }
+  const rng=mx-mn, pct=rng>0?(val-mn)/rng:0;
+
+  if (pct>0.001) {
+    const cm = el.colorMode||'static';
+    if (cm==='gradient') {
+      const steps=36;
+      for (let i=0;i<steps;i++) {
+        const p0=i/steps, p1=Math.min((i+1)/steps, pct);
+        if (p0>=pct) break;
+        ctx.beginPath();
+        ctx.arc(cx,cy,r,degRad(135+p0*270),degRad(135+p1*270+0.5));
+        ctx.strokeStyle = lerpColor(el.gradientStart||'#ff3333', el.gradientEnd||'#00ff00', p0);
+        ctx.lineWidth = sw;
+        ctx.lineCap = 'butt';
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,degRad(135),degRad(135+0.1));
+      ctx.strokeStyle = lerpColor(el.gradientStart||'#ff3333', el.gradientEnd||'#00ff00', 0);
+      ctx.lineWidth = sw; ctx.lineCap = 'round'; ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,degRad(135+pct*270-0.1),degRad(135+pct*270));
+      ctx.strokeStyle = lerpColor(el.gradientStart||'#ff3333', el.gradientEnd||'#00ff00', pct);
+      ctx.lineWidth = sw; ctx.lineCap = 'round'; ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,degRad(135),degRad(135+pct*270));
+      ctx.strokeStyle = arcColor(el, pct);
+      ctx.lineWidth = sw;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  }
+
+  if (!liveData) {
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,degRad(135),degRad(135+0.35*270));
+    ctx.strokeStyle = arcColor(el, 0.35);
+    ctx.lineWidth = sw;
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.25;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+function degRad(d) { return d*Math.PI/180; }
+
+/** Gleiche Font-Stufen wie Firmware pick_font() (dosis_20/32/40). */
+function previewFontPx(size) {
+  const s = size || 16;
+  if (s <= 27) return 20;
+  if (s <= 39) return 32;
+  return 40;
+}
+
+function renderLabel(parent, el) {
+  const d = document.createElement('div');
+  d.className = 'el'+(el.id===selectedId?' selected':'');
+  d.dataset.id = el.id;
+  d.style.left = el.x+'px';
+  d.style.top = el.y+'px';
+  d.style.fontSize = previewFontPx(el.fontSize)+'px';
+  d.style.fontFamily = el.fontFamily||'system-ui';
+  d.style.fontWeight = el.fontWeight||'400';
+  d.style.color = el.color||'#ffffff';
+  if (el.anchor==='middle') d.style.transform='translateX(-50%)';
+  else if (el.anchor==='end') d.style.transform='translateX(-100%)';
+
+  let text = el.text||'';
+  if (el.field&&liveData) text = resolveField(el);
+  const sp = document.createElement('span');
+  sp.textContent = text;
+  d.appendChild(sp);
+
+  const rh = document.createElement('div');
+  rh.className = 'resize-handle';
+  d.appendChild(rh);
+
+  setupDrag(d, el);
+  setupLabelResize(rh, el, d);
+  d.addEventListener('pointerdown', ev => { if(!ev.target.classList.contains('resize-handle')) selectElement(el.id, ev); });
+  parent.appendChild(d);
+}
+
+function resolveField(el) {
+  if (!liveData||!el.field) return el.text||'--';
+  if (el.field==='_detail') return 'Connected';
+  if (el.field==='_wifi') return t('wifi_connected');
+  if (el.field==='_fieldcount') return String(Object.keys(liveData).length);
+  if (el.field==='_time') return new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+  if (el.field==='_date') return new Date().toLocaleDateString('de-DE');
+  if (el.field==='_battery_icon') return '🔋';
+  if (el.field==='_battery_pct') return '85%';
+  if (el.field==='_ip') return '192.168.1.x';
+  if (el.field==='_ap_ssid') return 'StatusSphere-Setup';
+  if (el.field==='_uptime') return t('active');
+  if (el.field.startsWith('_sensor_')) {
+    const pfx=el.field.replace('_sensor_','');
+    if (liveData[pfx+'_online']?.value!==true) return 'offline';
+    return `Temp: ${fmtV(liveData[pfx+'_temp'],'°C')}  Feuchte: ${fmtV(liveData[pfx+'_hum'],'%')}`;
+  }
+  const f=liveData[el.field];
+  if (!f||f.value==null) return '--'+(el.suffix||'');
+  if (typeof f.value==='boolean') return f.value?'ja':'nein';
+  if (typeof f.value==='string') return f.value+(el.suffix||'');
+  if (el.format==='int') return Math.round(f.value)+(el.suffix||'');
+  return (Math.abs(f.value)>=100?f.value.toFixed(0):f.value.toFixed(1))+(el.suffix||'');
+}
+function fmtV(f,s) { return (!f||f.value==null)?'--':(typeof f.value==='number'?f.value.toFixed(1):f.value)+s; }
+
+/* ── Drag with snap guides ── */
+const SNAP_PX = 8;
+
+function getSnapTargets(elId) {
+  const targets = [];
+  curElements().forEach(other => {
+    if (other.id===elId) return;
+    targets.push({ y: other.y, x: other.x, id: other.id });
+    if (other.type==='arc') {
+      targets.push({ y: other.y + other.h / 2, x: other.x + other.w / 2, id: other.id });
+    }
+  });
+  targets.push({ y: dispCenterY(), x: dispCenterX(), id: '_center' });
+  return targets;
+}
+
+/** Y snap lines for label rows: existing rows + next slots with same Δy as last two rows. */
+function getRowSpacingSnap(excludeId) {
+  const ys = curElements()
+    .filter(e => e.type === 'label' && e.id !== excludeId)
+    .map(e => e.y)
+    .sort((a, b) => a - b);
+  const snapYs = new Set(ys);
+  let step = null;
+  if (ys.length >= 2) {
+    step = ys[ys.length - 1] - ys[ys.length - 2];
+    const last = ys[ys.length - 1];
+    for (let k = 1; k <= 10; k++) snapYs.add(last + k * step);
+  }
+  return { snapYs: [...snapYs], step };
+}
+
+function labelYsFromSelection() {
+  return [...selectedIds]
+    .map(id => findEl(id))
+    .filter(e => e && e.type === 'label')
+    .map(e => e.y)
+    .sort((a, b) => a - b);
+}
+
+function detectRowStep(ys) {
+  if (ys.length < 2) return null;
+  return ys[ys.length - 1] - ys[ys.length - 2];
+}
+
+function distributeSelectedYEvenly() {
+  const els = [...selectedIds].map(id => findEl(id)).filter(e => e && e.type === 'label');
+  if (els.length < 3) { alert(t('rowSpacingNeedTwo')); return; }
+  els.sort((a, b) => a.y - b.y);
+  const top = els[0].y;
+  const bottom = els[els.length - 1].y;
+  const step = (bottom - top) / (els.length - 1);
+  els.forEach((el, i) => { el.y = Math.round(top + i * step); });
+  renderDisplay();
+  save();
+  updateProps();
+}
+
+function addLabelRowWithSpacing() {
+  let ys = labelYsFromSelection();
+  let ref = selectedId ? findEl(selectedId) : null;
+  if (ys.length === 0) {
+    ys = curElements().filter(e => e.type === 'label').map(e => e.y).sort((a, b) => a - b);
+    ref = curElements().filter(e => e.type === 'label').slice(-1)[0] || null;
+  }
+  if (ys.length < 1 || !ref) { alert(t('rowSpacingNeedTwo')); return; }
+  const step = detectRowStep(ys) ?? 44;
+  const newY = ys[ys.length - 1] + step;
+  const el = {
+    id: uid(),
+    type: 'label',
+    x: ref.x,
+    y: newY,
+    text: '—',
+    fontSize: ref.fontSize || 20,
+    fontFamily: ref.fontFamily || 'Dosis',
+    fontWeight: ref.fontWeight || '400',
+    color: ref.color || '#94a3b8',
+    anchor: ref.anchor || 'start',
+    field: '',
+    suffix: '',
+    format: '',
+  };
+  curElements().push(el);
+  selectedId = el.id;
+  selectedIds.clear();
+  selectedIds.add(el.id);
+  save();
+  renderAll();
+  updateSelectionUI();
+}
+
+function applyCenterSnap(nx, ny, el, div) {
+  const box = measureElementBox(el, div);
+  const cx = nx + box.cxOff;
+  const cy = ny + box.cyOff;
+  let snapH = null;
+  let snapV = null;
+  if (Math.abs(cy - dispCenterY()) <= SNAP_PX) {
+    ny = Math.round(dispCenterY() - box.cyOff);
+    snapH = dispCenterY();
+  }
+  if (Math.abs(cx - dispCenterX()) <= SNAP_PX) {
+    nx = Math.round(dispCenterX() - box.cxOff);
+    snapV = dispCenterX();
+  }
+  return { nx, ny, snapH, snapV };
+}
+
+function clearGuides() {
+  document.querySelectorAll('.snap-guide,.drag-tooltip').forEach(n=>n.remove());
+}
+
+function showGuides(display, snapH, snapV, el, extra) {
+  extra = extra || {};
+  clearGuides();
+  if (snapH!==null) {
+    const g=document.createElement('div');
+    g.className='snap-guide snap-guide-h' + (extra.spacingSnap ? ' snap-guide-spacing' : '');
+    g.style.top=snapH+'px';
+    display.appendChild(g);
+  }
+  if (snapV!==null) {
+    const g=document.createElement('div');
+    g.className='snap-guide snap-guide-v';
+    g.style.left=snapV+'px';
+    display.appendChild(g);
+  }
+  const tt=document.createElement('div');
+  tt.className='drag-tooltip';
+  let tip = `x:${el.x}  y:${el.y}`;
+  if (extra.rowStep != null) tip += `  Δy:${extra.rowStep}px`;
+  tt.textContent = tip;
+  tt.style.left=(el.x+6)+'px';
+  tt.style.top=(el.y-18)+'px';
+  display.appendChild(tt);
+}
+
+function getGroupSiblings(el) {
+  if (!el._group) return [];
+  return curElements().filter(e => e._group===el._group && e.id!==el.id);
+}
+
+function setupDrag(div, el) {
+  let sx,sy,ox,oy,dr=false,siblingOffsets=[];
+  const display=document.getElementById('display');
+  div.addEventListener('pointerdown', ev => {
+    if(ev.target.classList.contains('resize-handle')) return;
+    dr=true; sx=ev.clientX; sy=ev.clientY; ox=el.x; oy=el.y;
+    siblingOffsets = getGroupSiblings(el).map(s => ({ el:s, dx:s.x-el.x, dy:s.y-el.y }));
+    div.setPointerCapture(ev.pointerId);
+  });
+  div.addEventListener('pointermove', ev => {
+    if(!dr) return;
+    let nx=Math.round(ox+(ev.clientX-sx));
+    let ny=Math.round(oy+(ev.clientY-sy));
+    const grpIds = el._group ? curElements().filter(e=>e._group===el._group).map(e=>e.id) : [el.id];
+    const targets=getSnapTargets(el.id).filter(t => !grpIds.includes(t.id));
+    let snapH=null, snapV=null;
+    const centerSnap = applyCenterSnap(nx, ny, el, div);
+    nx = centerSnap.nx;
+    ny = centerSnap.ny;
+    snapH = centerSnap.snapH;
+    snapV = centerSnap.snapV;
+    for (const t of targets) {
+      if (t.y!==undefined && Math.abs(ny-t.y)<=SNAP_PX) { ny=t.y; snapH=t.y; }
+      if (t.x!==undefined && Math.abs(nx-t.x)<=SNAP_PX) { nx=t.x; snapV=t.x; }
+    }
+    let spacingSnap = false;
+    let rowStep = null;
+    if (el.type === 'label') {
+      const rowSnap = getRowSpacingSnap(el.id);
+      rowStep = rowSnap.step;
+      const existingYs = curElements()
+        .filter(e => e.type === 'label' && e.id !== el.id)
+        .map(e => e.y);
+      const maxExisting = existingYs.length ? Math.max(...existingYs) : -9999;
+      for (const sy of rowSnap.snapYs) {
+        if (Math.abs(ny - sy) <= SNAP_PX) {
+          ny = sy;
+          snapH = sy;
+          spacingSnap = rowSnap.step != null && sy > maxExisting;
+          break;
+        }
+      }
+    }
+    el.x=nx; el.y=ny;
+    div.style.left=el.x+'px'; div.style.top=el.y+'px';
+    for (const s of siblingOffsets) {
+      s.el.x = nx+s.dx; s.el.y = ny+s.dy;
+      const sDiv = display.querySelector(`[data-id="${s.el.id}"]`);
+      if (sDiv) { sDiv.style.left=s.el.x+'px'; sDiv.style.top=s.el.y+'px'; }
+    }
+    showGuides(display, snapH, snapV, el, { rowStep, spacingSnap });
+  });
+  const end = () => { if(dr){dr=false;clearGuides();save();updateProps();} };
+  div.addEventListener('pointerup', end);
+  div.addEventListener('lostpointercapture', end);
+}
+function setupResize(h, el, cb) {
+  let sx,sy,ow,oh,rs=false;
+  h.addEventListener('pointerdown', ev => {
+    rs=true; sx=ev.clientX; sy=ev.clientY; ow=el.w; oh=el.h;
+    h.setPointerCapture(ev.pointerId); ev.stopPropagation();
+  });
+  h.addEventListener('pointermove', ev => {
+    if(!rs) return;
+    el.w=Math.max(40,ow+(ev.clientX-sx));
+    el.h=Math.max(40,oh+(ev.clientY-sy));
+    h.parentElement.style.width=el.w+'px';
+    h.parentElement.style.height=el.h+'px';
+    if(cb) cb();
+  });
+  const end = () => { if(rs){rs=false;save();updateProps();} };
+  h.addEventListener('pointerup', end);
+  h.addEventListener('lostpointercapture', end);
+}
+function setupLabelResize(h, el, div) {
+  let sy,oFs,rs=false;
+  h.addEventListener('pointerdown', ev => {
+    rs=true; sy=ev.clientY; oFs=el.fontSize||16;
+    h.setPointerCapture(ev.pointerId); ev.stopPropagation();
+  });
+  h.addEventListener('pointermove', ev => {
+    if(!rs) return;
+    el.fontSize = Math.max(8, Math.min(80, Math.round(oFs + (ev.clientY-sy)*0.5)));
+    div.style.fontSize = el.fontSize+'px';
+  });
+  const end = () => { if(rs){rs=false;save();updateProps();} };
+  h.addEventListener('pointerup', end);
+  h.addEventListener('lostpointercapture', end);
+}
+
+/* ── Selection ── */
+function selectElement(id, ev) {
+  const ctrlKey = ev && (ev.ctrlKey || ev.metaKey);
+  if (ctrlKey) {
+    if (selectedIds.has(id)) selectedIds.delete(id);
+    else selectedIds.add(id);
+    if (selectedIds.size===1) selectedId = [...selectedIds][0];
+    else selectedId = null;
+  } else {
+    selectedIds.clear();
+    selectedIds.add(id);
+    selectedId = id;
+  }
+  updateSelectionUI();
+  renderProps();
+}
+function updateSelectionUI() {
+  document.querySelectorAll('#display .el').forEach(n => n.classList.toggle('selected', selectedIds.has(n.dataset.id)));
+  document.querySelectorAll('#layer-list .layer-item').forEach((n,i) => {
+    const els=curElements();
+    n.classList.toggle('selected', i<els.length && selectedIds.has(els[i].id));
+  });
+}
+function deleteElement(id) {
+  const el = findEl(id);
+  if (el && el._group) {
+    const grouped = curElements().filter(e=>e._group===el._group);
+    if (grouped.length>1 && confirm(t('confirmDeleteGroup', {n: grouped.length}))) {
+      grouped.forEach(g => { const i=curElements().indexOf(g); if(i>=0) curElements().splice(i,1); });
+    } else {
+      const idx=curElements().indexOf(el);
+      if(idx>=0) curElements().splice(idx,1);
+    }
+  } else {
+    const els=curElements(), idx=els.findIndex(e=>e.id===id);
+    if(idx>=0) els.splice(idx,1);
+  }
+  if(selectedId===id) selectedId=null;
+  save(); renderDisplay(); renderLayerList(); renderProps();
+}
+function duplicateElement(id) {
+  const el = findEl(id);
+  if (!el) return;
+  const copy = JSON.parse(JSON.stringify(el));
+  copy.id = uid();
+  copy.y += 30;
+  if (copy._group) copy._group = null;
+  curElements().push(copy);
+  save(); renderDisplay(); renderLayerList();
+  selectElement(copy.id);
+}
+function addElement() {
+  const el = {
+    id:uid(), type:'label', x:200, y:200, text:'Text',
+    fontSize:20, fontFamily:'Dosis', fontWeight:'600',
+    color:'#ffffff', anchor:'start', field:'', suffix:'', format:''
+  };
+  curElements().push(el); save(); renderDisplay(); renderLayerList();
+  selectElement(el.id);
+}
+function addArc() {
+  const el = {
+    id:uid(), type:'arc', x:0, y:0, w:dispW(), h:dispH(),
+    strokeWidth:22, bgColor:'#1a1a1a', color:'#00ff00',
+    field:'soc', min:0, max:100
+  };
+  curElements().push(el); save(); renderDisplay(); renderLayerList();
+  selectElement(el.id);
+}
+
+/* ── Properties ── */
+function renderProps() {
+  const panel = document.getElementById('props-panel');
+
+  if (selectedIds.size > 1) {
+    const count = selectedIds.size;
+    const els = [...selectedIds].map(id=>findEl(id)).filter(Boolean);
+    const labelYs = els.filter(e => e.type === 'label').map(e => e.y).sort((a,b)=>a-b);
+    const step = detectRowStep(labelYs);
+    const allSameGroup = (() => {
+      const groups = new Set(els.map(e=>e._group).filter(Boolean));
+      return groups.size===1 && els.every(e=>e._group===els[0]._group) && els[0]._group;
+    })();
+    let rowTools = '';
+    if (labelYs.length >= 2 && step != null) {
+      rowTools = `
+      <div style="margin:12px 0;padding:10px;border:1px solid #334155;border-radius:6px">
+        <div style="font-size:12px;color:var(--text);margin-bottom:8px">${t('rowSpacing')}: <b>${step}px</b></div>
+        ${labelYs.length >= 3 ? `<button type="button" onclick="distributeSelectedYEvenly()" class="sm-btn btn-gray" style="width:100%;padding:8px;font-size:11px;margin-bottom:6px">${t('distributeRows')}</button>` : ''}
+        <button type="button" onclick="addLabelRowWithSpacing()" class="sm-btn btn-blue" style="width:100%;padding:8px;font-size:11px">${t('addRowSpacing')}</button>
+        <div style="font-size:10px;color:#475569;margin-top:6px;line-height:1.35">${t('rowSpacingSnap')}</div>
+      </div>`;
+    }
+    panel.innerHTML = `<div class="no-selection" style="padding:20px">
+      <div style="font-size:14px;color:var(--text);margin-bottom:12px"><b>${t('elementsSelected', {n: count})}</b></div>
+      ${rowTools}
+      ${allSameGroup
+        ? `<div style="color:#3b82f6;font-size:12px;margin-bottom:10px">${t('alreadyGrouped')}</div>
+           <button onclick="ungroupSelected()" class="sm-btn btn-red" style="width:100%;padding:8px;font-size:12px">${t('ungroup')}</button>`
+        : `<button onclick="groupSelected()" class="sm-btn btn-blue" style="width:100%;padding:8px;font-size:12px">${t('groupBtn')}</button>`}
+      <div style="margin-top:8px;font-size:10px;color:#475569">${t('ctrlHint')}</div>
+    </div>`;
+    return;
+  }
+
+  if (!selectedId) {
+    panel.innerHTML = '<div class="no-selection">'+t('noSelection')+'</div>';
+    return;
+  }
+  const el = findEl(selectedId);
+  if (!el) { panel.innerHTML=''; return; }
+
+  let h='';
+  if (el.type==='label') {
+    h += pg(t('propsText'),`<input id="p-text" value="${esc(el.text||'')}">`);
+    h += pg(t('propsField'),fieldSel('p-field',el.field||''));
+    h += pg(t('propsSuffix'),`<input id="p-suffix" value="${esc(el.suffix||'')}" placeholder=" W,  %, °C">`);
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>X</label><input id="p-x" type="number" value="${el.x}"></div>
+      <div><label>Y</label><input id="p-y" type="number" value="${el.y}"></div>
+    </div></div>`;
+    h += centerAlignButtonsHtml();
+    const pageLabelYs = curElements().filter(e => e.type === 'label').map(e => e.y).sort((a, b) => a - b);
+    const pageStep = detectRowStep(pageLabelYs);
+    if (pageStep != null) {
+      const nextY = pageLabelYs[pageLabelYs.length - 1] + pageStep;
+      h += `<div class="prop-group" style="margin-top:4px;padding:8px;border:1px solid #334155;border-radius:6px">
+        <div style="font-size:11px;color:var(--muted)">${t('rowSpacing')}: <b>${pageStep}px</b> → Y ${nextY}</div>
+        <button type="button" class="sm-btn btn-blue" style="width:100%;margin-top:6px;padding:6px;font-size:11px" onclick="addLabelRowWithSpacing()">${t('addRowSpacing')}</button>
+        <div style="font-size:10px;color:#475569;margin-top:4px">${t('rowSpacingSnap')}</div>
+      </div>`;
+    }
+    h += pg(t('propsFontSize'),`<input id="p-fs" type="number" value="${el.fontSize}" min="8" max="80">`);
+    h += pg(t('propsFont'),`<select id="p-ff">${FONTS.map(f=>`<option${f===el.fontFamily?' selected':''}>${f}</option>`).join('')}</select>`);
+    h += pg(t('propsWeight'),`<select id="p-fw">${FONT_WEIGHTS.map(w=>`<option${w===el.fontWeight?' selected':''}>${w}</option>`).join('')}</select>`);
+    h += pg(t('propsColor'),`<input id="p-color" type="color" value="${el.color||'#ffffff'}">`);
+    h += pg(t('propsAlign'),`<select id="p-anchor">
+      <option value="start"${el.anchor==='start'?' selected':''}>${t('alignLeft')}</option>
+      <option value="middle"${el.anchor==='middle'?' selected':''}>${t('alignCenter')}</option>
+      <option value="end"${el.anchor==='end'?' selected':''}>${t('alignRight')}</option></select>`);
+    h += pg(t('propsFormat'),`<select id="p-fmt">
+      <option value=""${!el.format?' selected':''}>${t('fmtAuto')}</option>
+      <option value="int"${el.format==='int'?' selected':''}>${t('fmtInt')}</option></select>`);
+    // Group checkbox
+    const hasGroup = !!el._group;
+    const siblings = hasGroup ? curElements().filter(e=>e._group===el._group&&e.id!==el.id) : [];
+    h += `<div class="prop-group" style="border:1px solid #334155;border-radius:6px;margin:8px 14px;padding:10px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="p-group" ${hasGroup?'checked':''} style="width:auto;margin:0;accent-color:#3b82f6">
+        ${t('grouped')}
+      </label>
+      ${hasGroup&&siblings.length?`<div style="margin-top:6px;font-size:11px;color:#64748b">${t('groupedWith')} ${siblings.map(s=>`"${esc((s.text||s.field||'').substring(0,14))}"`).join(', ')}</div>`:''}
+      ${hasGroup?`<div style="margin-top:4px;font-size:10px;color:#475569">${t('groupedMoveHint')}</div>`:''}
+    </div>`;
+    const hasRing = !!findLinkedArc(el.id);
+    h += `<div class="prop-group" style="border:1px solid #334155;border-radius:6px;margin:8px 14px;padding:10px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="p-ring" ${hasRing?'checked':''} style="width:auto;margin:0;accent-color:#22c55e">
+        ${t('showRing')}
+      </label>
+      ${hasRing?`<div style="margin-top:8px">
+        <label>Ring-Farbe</label><input id="p-ring-color" type="color" value="${getLinkedArcProp(el.id,'color','#00ff00')}">
+        <div class="prop-row">
+          <div><label>Min</label><input id="p-ring-min" type="number" value="${getLinkedArcProp(el.id,'min',0)}" step="any"></div>
+          <div><label>Max</label><input id="p-ring-max" type="number" value="${getLinkedArcProp(el.id,'max',100)}" step="any"></div>
+        </div>
+      </div>`:''}
+    </div>`;
+  } else if (el.type==='arc') {
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>X</label><input id="p-x" type="number" value="${el.x}"></div>
+      <div><label>Y</label><input id="p-y" type="number" value="${el.y}"></div></div></div>`;
+    h += centerAlignButtonsHtml();
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>${t('width')}</label><input id="p-w" type="number" value="${el.w}"></div>
+      <div><label>${t('height')}</label><input id="p-h" type="number" value="${el.h}"></div></div></div>`;
+    h += pg(t('propsField'),fieldSel('p-field',el.field||''));
+    h += pg(t('strokeWidth'),`<input id="p-sw" type="number" value="${el.strokeWidth||20}" min="2" max="60">`);
+    const rs = el.ringStyle||'standard';
+    h += pg(t('ringStyle'),`<select id="p-rs">
+      <option value="standard"${rs==='standard'?' selected':''}>${t('ringStandard')}</option>
+      <option value="dynamic"${rs==='dynamic'?' selected':''}>${t('ringDynamic')}</option>
+    </select>`);
+    if (rs==='standard') {
+      h += pg(t('ringBg'),`<input id="p-bg" type="color" value="${el.bgColor||'#1a1a1a'}">`);
+    }
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>${t('min')}</label><input id="p-min" type="number" value="${el.min??0}" step="any"></div>
+      <div><label>${t('max')}</label><input id="p-max" type="number" value="${el.max??100}" step="any"></div></div></div>`;
+    const cm = el.colorMode||'static';
+    h += pg(t('colorMode'),`<select id="p-cm">
+      <option value="static"${cm==='static'?' selected':''}>${t('colorStatic')}</option>
+      <option value="threshold"${cm==='threshold'?' selected':''}>${t('colorThreshold')}</option>
+      <option value="gradient"${cm==='gradient'?' selected':''}>${t('colorGradient')}</option>
+    </select>`);
+    if (cm==='static') {
+      h += pg(t('ringColor'),`<input id="p-color" type="color" value="${el.color||'#00ff00'}">`);
+    } else if (cm==='threshold') {
+      const th = el.thresholds || {high:60,mid:25,colorHigh:'#00ff00',colorMid:'#ffa500',colorLow:'#ff3333'};
+      h += `<div class="prop-group"><label>${t('thresholds')}</label>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <input id="p-th-ch" type="color" value="${th.colorHigh}" style="width:36px;flex-shrink:0">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">ab</span>
+          <input id="p-th-h" type="number" value="${th.high}" step="any" style="width:60px">
+          <span style="font-size:11px;color:var(--muted)">%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <input id="p-th-cm" type="color" value="${th.colorMid}" style="width:36px;flex-shrink:0">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">ab</span>
+          <input id="p-th-m" type="number" value="${th.mid}" step="any" style="width:60px">
+          <span style="font-size:11px;color:var(--muted)">%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input id="p-th-cl" type="color" value="${th.colorLow}" style="width:36px;flex-shrink:0">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">${t('below')}</span>
+        </div>
+      </div>`;
+    } else if (cm==='gradient') {
+      h += `<div class="prop-group"><label>${t('gradient')}</label>
+        <div class="prop-row" style="margin-bottom:6px">
+          <div><label>0% (Min)</label><input id="p-gr-start" type="color" value="${el.gradientStart||'#ff3333'}"></div>
+          <div><label>100% (Max)</label><input id="p-gr-end" type="color" value="${el.gradientEnd||'#00ff00'}"></div>
+        </div>
+        <div style="height:12px;border-radius:4px;background:linear-gradient(to right,${el.gradientStart||'#ff3333'},${el.gradientEnd||'#00ff00'})"></div>
+      </div>`;
+    }
+  }
+
+  panel.innerHTML = h;
+  panel.querySelectorAll('input,select').forEach(inp => {
+    if (inp.id==='p-ring'||inp.id==='p-group') return;
+    inp.addEventListener('input',()=>applyProps(el));
+  });
+  const fs=document.getElementById('p-field'), fc=document.getElementById('p-field_c');
+  if (fs&&fc) fs.addEventListener('change',()=>{ fc.value=fs.value; applyProps(el); });
+
+  const groupCb = document.getElementById('p-group');
+  if (groupCb) groupCb.addEventListener('change', () => {
+    if (groupCb.checked) {
+      if (!el._group) el._group = 'g_'+(idCounter++);
+    } else {
+      el._group = null;
+    }
+    save(); renderProps();
+  });
+
+  const ringCb = document.getElementById('p-ring');
+  if (ringCb) ringCb.addEventListener('change', () => toggleRing(el, ringCb.checked));
+  const rc=document.getElementById('p-ring-color'), rmn=document.getElementById('p-ring-min'), rmx=document.getElementById('p-ring-max');
+  [rc,rmn,rmx].forEach(inp => { if(inp) inp.addEventListener('input', ()=>updateLinkedArc(el)); });
+}
+function findLinkedArc(labelId) {
+  const label = findEl(labelId);
+  if (!label || !label.field) return null;
+  return curElements().find(e => e.type==='arc' && e._linkedTo===labelId);
+}
+function getLinkedArcProp(labelId, prop, def) {
+  const arc = findLinkedArc(labelId);
+  return arc ? (arc[prop] ?? def) : def;
+}
+function toggleRing(labelEl, checked) {
+  if (checked) {
+    if (findLinkedArc(labelEl.id)) return;
+    const arc = {
+      id:uid(), type:'arc', x:0, y:0, w:dispW(), h:dispH(),
+      strokeWidth:22, bgColor:'#1a1a1a', color:'#00ff00',
+      field: labelEl.field || 'soc', min:0, max:100,
+      _linkedTo: labelEl.id
+    };
+    curElements().unshift(arc);
+  } else {
+    const idx = curElements().findIndex(e => e.type==='arc' && e._linkedTo===labelEl.id);
+    if (idx>=0) curElements().splice(idx,1);
+  }
+  save(); renderDisplay(); renderLayerList(); renderProps();
+}
+function updateLinkedArc(labelEl) {
+  const arc = findLinkedArc(labelEl.id);
+  if (!arc) return;
+  const v=id=>{const e=document.getElementById(id);return e?e.value:undefined};
+  const n=id=>{const e=document.getElementById(id);return e?Number(e.value):undefined};
+  arc.color = v('p-ring-color') ?? arc.color;
+  arc.min = n('p-ring-min') ?? arc.min;
+  arc.max = n('p-ring-max') ?? arc.max;
+  arc.field = labelEl.field;
+  save(); renderDisplay();
+}
+function groupSelected() {
+  if (selectedIds.size<2) return;
+  const gid = 'g_'+(idCounter++);
+  selectedIds.forEach(id => { const el=findEl(id); if(el) el._group=gid; });
+  save(); renderLayerList(); renderProps();
+}
+function ungroupSelected() {
+  selectedIds.forEach(id => { const el=findEl(id); if(el) el._group=null; });
+  save(); renderLayerList(); renderProps();
+}
+function updateProps() { renderProps(); }
+function pg(l,c) { return `<div class="prop-group"><label>${l}</label>${c}</div>`; }
+function esc(s) { return s.replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function fieldSel(id,cur) {
+  const keys = liveData?Object.keys(liveData):[];
+  let o='<option value="">(kein / statischer Text)</option>';
+  for (const k of keys) {
+    const v=liveData[k]?.value;
+    const hint=v!=null?` = ${typeof v==='number'?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1)):v}`:'';
+    o+=`<option value="${esc(k)}"${k===cur?' selected':''}>${k}${hint}</option>`;
+  }
+  if (cur&&!keys.includes(cur)&&cur!=='') o+=`<option value="${esc(cur)}" selected>${cur}</option>`;
+  return `<select id="${id}">${o}</select><input id="${id}_c" value="${esc(cur)}" placeholder="oder manuell" style="margin-top:3px;font-size:11px">`;
+}
+
+function applyProps(el) {
+  const v=id=>{const e=document.getElementById(id);return e?e.value:undefined};
+  const n=id=>{const e=document.getElementById(id);return e?Number(e.value):undefined};
+  const fld=()=>{const c=v('p-field_c'),s=v('p-field');return(c!==undefined&&c!=='')?c:(s??el.field);};
+  if (el.type==='label') {
+    el.text=v('p-text')??el.text; el.field=fld(); el.suffix=v('p-suffix')??el.suffix;
+    el.x=n('p-x')??el.x; el.y=n('p-y')??el.y;
+    el.fontSize=n('p-fs')??el.fontSize; el.fontFamily=v('p-ff')??el.fontFamily;
+    el.fontWeight=v('p-fw')??el.fontWeight; el.color=v('p-color')??el.color;
+    el.anchor=v('p-anchor')??el.anchor; el.format=v('p-fmt')??el.format;
+  } else if (el.type==='arc') {
+    el.x=n('p-x')??el.x; el.y=n('p-y')??el.y;
+    el.w=n('p-w')??el.w; el.h=n('p-h')??el.h;
+    el.field=fld(); el.strokeWidth=n('p-sw')??el.strokeWidth;
+    el.bgColor=v('p-bg')??el.bgColor;
+    el.min=n('p-min')??el.min; el.max=n('p-max')??el.max;
+    const newRs = v('p-rs');
+    if (newRs && newRs !== el.ringStyle) {
+      el.ringStyle = newRs;
+      save(); renderDisplay(); renderLayerList(); renderProps();
+      return;
+    }
+    const newCm = v('p-cm');
+    if (newCm && newCm !== el.colorMode) {
+      el.colorMode = newCm;
+      if (newCm==='threshold' && !el.thresholds) {
+        el.thresholds = {high:60,mid:25,colorHigh:'#00ff00',colorMid:'#ffa500',colorLow:'#ff3333'};
+      }
+      save(); renderDisplay(); renderLayerList(); renderProps();
+      return;
+    }
+    if (el.colorMode==='static' || !el.colorMode) {
+      el.color=v('p-color')??el.color;
+    } else if (el.colorMode==='threshold') {
+      if (!el.thresholds) el.thresholds={high:60,mid:25,colorHigh:'#00ff00',colorMid:'#ffa500',colorLow:'#ff3333'};
+      el.thresholds.colorHigh=v('p-th-ch')??el.thresholds.colorHigh;
+      el.thresholds.high=n('p-th-h')??el.thresholds.high;
+      el.thresholds.colorMid=v('p-th-cm')??el.thresholds.colorMid;
+      el.thresholds.mid=n('p-th-m')??el.thresholds.mid;
+      el.thresholds.colorLow=v('p-th-cl')??el.thresholds.colorLow;
+    } else if (el.colorMode==='gradient') {
+      el.gradientStart=v('p-gr-start')??el.gradientStart??'#ff3333';
+      el.gradientEnd=v('p-gr-end')??el.gradientEnd??'#00ff00';
+    }
+  }
+  save(); renderDisplay(); renderLayerList();
+}
+
+/* ── Data ── */
+const isFlaskServer = location.port==='5000';
+
+function startFetch() {
+  const url=document.getElementById('endpoint').value.trim();
+  if(!url) return;
+  document.getElementById('btn-stop').style.display='';
+  fetchOnce(url);
+  fetchTimer=setInterval(()=>fetchOnce(url),5000);
+}
+function stopFetch() {
+  clearInterval(fetchTimer); fetchTimer=null;
+  document.getElementById('btn-stop').style.display='none';
+  document.getElementById('status').textContent='Gestoppt';
+}
+async function fetchOnce(url) {
+  try {
+    const fetchUrl = isFlaskServer ? `/api/data?url=${encodeURIComponent(url)}` : url;
+    const r=await fetch(fetchUrl);
+    liveData=await r.json();
+    document.getElementById('status').textContent=`Live — ${Object.keys(liveData).length} Felder — ${new Date().toLocaleTimeString()}`;
+    renderDisplay(); renderFieldList();
+  } catch(e) {
+    document.getElementById('status').textContent='Fehler: '+e.message;
+  }
+}
+function loadDemo() {
+  liveData={"soc":{"value":73},"bat_p":{"value":-849.3},"bat_sts":{"value":"discharge"},"sys_pv_p":{"value":443.6},"sys_load_p":{"value":1403.1},"sys_grid_p":{"value":110.2},"bat_v":{"value":23},"bat_i":{"value":-29.6},"bat_temp":{"value":31},"rssi":{"value":-33},"grid_v":{"value":240},"grid_i":{"value":4.57},"grid_f":{"value":49.98},"grid_p":{"value":1095.2},"ht_temp":{"value":22.5},"ht_hum":{"value":48},"ht_online":{"value":true},"ht2_online":{"value":false},"ht3_online":{"value":false},"ht4_online":{"value":false}};
+  document.getElementById('status').textContent=`Demo — ${Object.keys(liveData).length} Felder`;
+  renderDisplay(); renderFieldList();
+}
+
+/* ── Flash / Build / Ports ── */
+async function refreshPorts() {
+  if (!isFlaskServer) { alert(t('alertPorts')); return; }
+  try {
+    const r = await fetch('/api/ports');
+    const ports = await r.json();
+    const sel = document.getElementById('port-select');
+    sel.innerHTML = '<option value="">COM-Port...</option>';
+    ports.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.device;
+      opt.textContent = `${p.device} — ${p.description}`;
+      sel.appendChild(opt);
+    });
+  } catch(e) { alert(t('alertPortsFail')+e.message); }
+}
+
+function openFlashOverlay(title) {
+  document.getElementById('flash-title').textContent = title;
+  document.getElementById('flash-log').textContent = '';
+  document.getElementById('flash-overlay').classList.add('active');
+  document.getElementById('flash-close').style.display = 'none';
+}
+function closeFlashOverlay() {
+  document.getElementById('flash-overlay').classList.remove('active');
+}
+function appendFlashLog(text) {
+  const log = document.getElementById('flash-log');
+  log.textContent += text + '\n';
+  log.scrollTop = log.scrollHeight;
+}
+
+function streamJob(jobId) {
+  return new Promise((resolve) => {
+    let lastLine = '';
+    const es = new EventSource(`/api/flash/status/${jobId}`);
+    es.onmessage = ev => {
+      if (ev.data === '[DONE]') {
+        es.close();
+        document.getElementById('flash-close').style.display = '';
+        const exitMatch = lastLine.match(/Exit code:\s*(\d+)/);
+        resolve(exitMatch ? parseInt(exitMatch[1]) : -1);
+        return;
+      }
+      if (ev.data === '[timeout]') return;
+      lastLine = ev.data;
+      appendFlashLog(ev.data);
+    };
+    es.onerror = () => {
+      es.close();
+      appendFlashLog('[Verbindung verloren]');
+      document.getElementById('flash-close').style.display = '';
+      resolve(-1);
+    };
+  });
+}
+
+async function startBuild() {
+  if (!isFlaskServer) { alert(t('alertBuild')); return; }
+  openFlashOverlay('Build');
+  try {
+    await fetch('/api/save-layout', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(layoutExportObject())
+    });
+    appendFlashLog(t('layoutSaved'));
+    const r = await fetch('/api/build', {method:'POST'});
+    const d = await r.json();
+    const exit = await streamJob(d.job_id);
+    return exit;
+  } catch(e) { appendFlashLog('Fehler: '+e.message); document.getElementById('flash-close').style.display=''; return -1; }
+}
+
+async function startFlash() {
+  if (!isFlaskServer) { alert(t('alertFlash')); return; }
+  const port = document.getElementById('port-select').value;
+  if (!port) { alert(t('alertSelectPort')); return; }
+
+  openFlashOverlay('Build + Flash — '+port);
+  try {
+    await fetch('/api/save-layout', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(layoutExportObject())
+    });
+    appendFlashLog(t('layoutSaved'));
+    appendFlashLog('=== Build ===\n');
+    const br = await fetch('/api/build', {method:'POST'});
+    const bd = await br.json();
+    const buildExit = await streamJob(bd.job_id);
+    if (buildExit !== 0) {
+      appendFlashLog('\n*** Build fehlgeschlagen (Exit ' + buildExit + ') — Flash abgebrochen ***');
+      return;
+    }
+    appendFlashLog('\n=== Flash ===');
+    const fr = await fetch('/api/flash', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({port})});
+    const fd = await fr.json();
+    await streamJob(fd.job_id);
+  } catch(e) { appendFlashLog('Fehler: '+e.message); document.getElementById('flash-close').style.display=''; }
+}
+
+async function pushDisplaySettings() {
+  if (!isFlaskServer) { alert(t('alertPushSettings')); return; }
+  const espIp = document.getElementById('esp-ip').value.trim();
+  if (!espIp) { alert(t('alertEspIp')); return; }
+  const settings = {
+    brightness_percent: displayDefaults.brightness,
+    contrast_percent: displayDefaults.contrast,
+    invert: displayDefaults.invert,
+    screen_off_seconds: displayDefaults.screenOff,
+  };
+  try {
+    const r = await fetch('/api/push-display-settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ esp_ip: espIp, settings }),
+    });
+    const d = await r.json();
+    if (d.error) alert(t('errorPrefix')+d.error);
+    else alert(t('settingsSent')+d.status);
+  } catch(e) { alert(t('errorPrefix')+e.message); }
+}
+
+async function pushArcColors() {
+  if (!isFlaskServer) { alert(t('alertPushColors')); return; }
+  const espIp = document.getElementById('esp-ip').value.trim();
+  if (!espIp) { alert(t('alertEspIp')); return; }
+  const arcs = [];
+  pages.forEach(p => p.elements.forEach(el => { if (el.type==='arc') arcs.push(el); }));
+  if (arcs.length===0) { alert(t('alertNoArc')); return; }
+  const arc = arcs[0];
+  const colors = {};
+  if (arc.colorMode==='threshold' && arc.thresholds) {
+    colors.soc_high = arc.thresholds.colorHigh;
+    colors.soc_mid = arc.thresholds.colorMid;
+    colors.soc_low = arc.thresholds.colorLow;
+  } else {
+    colors.soc_high = arc.color||'#00ff00';
+    colors.soc_mid = arc.color||'#00ff00';
+    colors.soc_low = arc.color||'#00ff00';
+  }
+  try {
+    const r = await fetch('/api/push-arc-colors', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({esp_ip:espIp, colors})});
+    const d = await r.json();
+    if (d.error) alert(t('errorPrefix')+d.error);
+    else alert(t('colorsSent')+d.status);
+  } catch(e) { alert(t('errorPrefix')+e.message); }
+}
+
+/* ── Export / Import ── */
+function exportLayout() {
+  const json=JSON.stringify(layoutExportObject(),null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download='status_sphere_layout.json'; a.click();
+}
+function importLayout() {
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json';
+  inp.onchange=async()=>{
+    try {
+      const d=JSON.parse(await inp.files[0].text());
+      pages=d.pages||d; idCounter=d.idCounter||100;
+      if (d.locale==='en'||d.locale==='de') lang=d.locale;
+      if (d.displayDefaults) displayDefaults={...displayDefaults,...d.displayDefaults};
+      loadLayoutMetaFromObject(d);
+      applyDisplayFrameSize();
+      save(); setLang(lang);
+      switchPage(0);
+    } catch(e) { alert(t('alertInvalidJson')); }
+  };
+  inp.click();
+}
+
+document.addEventListener('keydown', ev => {
+  if (ev.key==='Delete' && !ev.target.matches('input,select,textarea')) {
+    if (selectedIds.size>1) {
+      [...selectedIds].forEach(id => {
+        const idx=curElements().findIndex(e=>e.id===id);
+        if(idx>=0) curElements().splice(idx,1);
+      });
+      selectedId=null; selectedIds.clear();
+      save(); renderDisplay(); renderLayerList(); renderProps();
+    } else if (selectedId) {
+      deleteElement(selectedId);
+    }
+  }
+  if (ev.key==='g' && (ev.ctrlKey||ev.metaKey) && selectedIds.size>1 && !ev.target.matches('input,select,textarea')) {
+    ev.preventDefault();
+    groupSelected();
+  }
+});
+
+applyStaticI18n();
+renderTemplateSelect();
+init();
+initDrop();
+if (isFlaskServer) refreshPorts();
+</script>
+</body>
+</html>

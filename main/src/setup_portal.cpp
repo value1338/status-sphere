@@ -117,46 +117,97 @@ uint32_t parse_hex_color(const std::string& hex, uint32_t fallback) {
 
 }  // namespace
 
+SetupPortal* SetupPortal::instance() { return instance_; }
+
 esp_err_t SetupPortal::start() {
-  if (server_ != nullptr) {
-    return ESP_OK;
-  }
+  instance_ = this;
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.server_port = 80;
-  config.stack_size = 12288;
-  config.max_uri_handlers = 22;
-  config.recv_wait_timeout = 30;
+  config.max_uri_handlers = 16;
+  config.stack_size = 8192;
+  config.lru_purge_enable = true;
 
   ESP_RETURN_ON_ERROR(httpd_start(&server_, &config), kTag, "httpd_start failed");
 
-  auto reg = [&](const char* uri, httpd_method_t method,
-                 esp_err_t (*handler)(httpd_req_t*)) -> esp_err_t {
-    httpd_uri_t u = {};
-    u.uri = uri;
-    u.method = method;
-    u.handler = handler;
-    u.user_ctx = this;
-    return httpd_register_uri_handler(server_, &u);
+  httpd_uri_t root_uri = {};
+  root_uri.uri = "/";
+  root_uri.method = HTTP_GET;
+  root_uri.handler = &SetupPortal::handle_root;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &root_uri), kTag, "root handler failed");
+
+  httpd_uri_t health_uri = {};
+  health_uri.uri = "/api/health";
+  health_uri.method = HTTP_GET;
+  health_uri.handler = &SetupPortal::handle_health;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &health_uri), kTag,
+                      "health handler failed");
+
+  httpd_uri_t config_get_uri = {};
+  config_get_uri.uri = "/api/config";
+  config_get_uri.method = HTTP_GET;
+  config_get_uri.handler = &SetupPortal::handle_config_get;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &config_get_uri), kTag,
+                      "config get failed");
+
+  httpd_uri_t config_post_uri = {};
+  config_post_uri.uri = "/api/config";
+  config_post_uri.method = HTTP_POST;
+  config_post_uri.handler = &SetupPortal::handle_config_post;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &config_post_uri), kTag,
+                      "config post failed");
+
+  httpd_uri_t timezone_uri = {};
+  timezone_uri.uri = "/api/timezone";
+  timezone_uri.method = HTTP_POST;
+  timezone_uri.handler = &SetupPortal::handle_timezone_post;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &timezone_uri), kTag,
+                      "timezone handler failed");
+
+  httpd_uri_t wifi_scan_uri = {};
+  wifi_scan_uri.uri = "/api/wifi/scan";
+  wifi_scan_uri.method = HTTP_GET;
+  wifi_scan_uri.handler = &SetupPortal::handle_wifi_scan;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &wifi_scan_uri), kTag,
+                      "wifi scan failed");
+
+  httpd_uri_t arc_colors_uri = {};
+  arc_colors_uri.uri = "/api/arc-colors";
+  arc_colors_uri.method = HTTP_POST;
+  arc_colors_uri.handler = &SetupPortal::handle_arc_colors_post;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &arc_colors_uri), kTag,
+                      "arc colors handler failed");
+
+  httpd_uri_t display_get_uri = {};
+  display_get_uri.uri = "/api/display-settings";
+  display_get_uri.method = HTTP_GET;
+  display_get_uri.handler = &SetupPortal::handle_display_settings_get;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &display_get_uri), kTag,
+                      "display settings get failed");
+
+  httpd_uri_t display_post_uri = {};
+  display_post_uri.uri = "/api/display-settings";
+  display_post_uri.method = HTTP_POST;
+  display_post_uri.handler = &SetupPortal::handle_display_settings_post;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &display_post_uri), kTag,
+                      "display settings post failed");
+
+  static const char* kCaptiveUris[] = {
+      "/generate_204",
+      "/hotspot-detect.html",
+      "/library/test/success.html",
+      "/connecttest.txt",
+      "/ncsi.txt",
   };
+  for (const char* uri : kCaptiveUris) {
+    httpd_uri_t captive_uri = {};
+    captive_uri.uri = uri;
+    captive_uri.method = HTTP_GET;
+    captive_uri.handler = &SetupPortal::handle_captive_redirect;
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &captive_uri), kTag,
+                        "captive redirect failed");
+  }
 
-  ESP_RETURN_ON_ERROR(reg("/", HTTP_GET, &SetupPortal::handle_root), kTag, "root failed");
-  ESP_RETURN_ON_ERROR(reg("/generate_204", HTTP_GET, &SetupPortal::handle_captive_redirect), kTag, "captive failed");
-  ESP_RETURN_ON_ERROR(reg("/hotspot-detect.html", HTTP_GET, &SetupPortal::handle_captive_redirect), kTag, "captive failed");
-  ESP_RETURN_ON_ERROR(reg("/library/test/success.html", HTTP_GET, &SetupPortal::handle_captive_redirect), kTag, "captive failed");
-  ESP_RETURN_ON_ERROR(reg("/connecttest.txt", HTTP_GET, &SetupPortal::handle_captive_redirect), kTag, "captive failed");
-  ESP_RETURN_ON_ERROR(reg("/ncsi.txt", HTTP_GET, &SetupPortal::handle_captive_redirect), kTag, "captive failed");
-  ESP_RETURN_ON_ERROR(reg("/api/health", HTTP_GET, &SetupPortal::handle_health), kTag, "health failed");
-  ESP_RETURN_ON_ERROR(reg("/api/config", HTTP_GET, &SetupPortal::handle_config_get), kTag, "config get failed");
-  ESP_RETURN_ON_ERROR(reg("/api/config", HTTP_POST, &SetupPortal::handle_config_post), kTag, "config post failed");
-  ESP_RETURN_ON_ERROR(reg("/api/timezone", HTTP_POST, &SetupPortal::handle_timezone_post), kTag, "timezone failed");
-  ESP_RETURN_ON_ERROR(reg("/api/wifi/scan", HTTP_GET, &SetupPortal::handle_wifi_scan), kTag, "wifi scan failed");
-  ESP_RETURN_ON_ERROR(reg("/api/arc-colors", HTTP_POST, &SetupPortal::handle_arc_colors_post), kTag, "arc colors failed");
-  ESP_RETURN_ON_ERROR(reg("/api/display-settings", HTTP_GET, &SetupPortal::handle_display_settings_get), kTag, "display get failed");
-  ESP_RETURN_ON_ERROR(reg("/api/display-settings", HTTP_POST, &SetupPortal::handle_display_settings_post), kTag, "display post failed");
-
-  ESP_LOGI(kTag, "Setup portal ready at http://%s/",
-           wifi_manager_.setup_access_point_ip().c_str());
+  ESP_LOGI(kTag, "Setup portal ready");
   return ESP_OK;
 }
 
@@ -178,7 +229,7 @@ PortalAccessSnapshot SetupPortal::access_snapshot(bool request_authorized) {
 }
 
 esp_err_t SetupPortal::handle_root(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -234,7 +285,7 @@ esp_err_t SetupPortal::handle_root(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_health(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -258,7 +309,7 @@ esp_err_t SetupPortal::handle_health(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_config_get(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -275,7 +326,7 @@ esp_err_t SetupPortal::handle_config_get(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_config_post(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -308,7 +359,7 @@ esp_err_t SetupPortal::handle_config_post(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_timezone_post(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -336,7 +387,7 @@ esp_err_t SetupPortal::handle_timezone_post(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_wifi_scan(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -356,7 +407,7 @@ esp_err_t SetupPortal::handle_wifi_scan(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_display_settings_get(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -374,7 +425,7 @@ esp_err_t SetupPortal::handle_display_settings_get(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_display_settings_post(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }
@@ -406,7 +457,7 @@ esp_err_t SetupPortal::handle_display_settings_post(httpd_req_t* request) {
 }
 
 esp_err_t SetupPortal::handle_arc_colors_post(httpd_req_t* request) {
-  auto* portal = static_cast<SetupPortal*>(request->user_ctx);
+  SetupPortal* portal = instance();
   if (portal == nullptr) {
     return ESP_FAIL;
   }

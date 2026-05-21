@@ -102,6 +102,37 @@ def save_layout():
     return jsonify({"ok": True, "path": str(layout_path), "deleted_cache": deleted})
 
 
+# ── WiFi config bake (write credentials into application.cpp before build) ──
+
+import re as _re
+
+@app.route("/api/set-wifi-config", methods=["POST"])
+def set_wifi_config():
+    data = request.get_json(silent=True) or {}
+    ssid = data.get("wifi_ssid", "")
+    password = data.get("wifi_password", "")
+    status_url = data.get("status_url", "")
+
+    app_cpp = PROJECT_ROOT / "main" / "src" / "application.cpp"
+    if not app_cpp.is_file():
+        return jsonify({"error": "application.cpp not found"}), 500
+
+    source = app_cpp.read_text(encoding="utf-8")
+
+    def replace_const(src, name, value):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        pattern = rf'(constexpr\s+char\s+{name}\[\]\s*=\s*")[^"]*(")'
+        return _re.sub(pattern, rf'\g<1>{escaped}\2', src)
+
+    source = replace_const(source, "kWifiSsid", ssid)
+    source = replace_const(source, "kWifiPassword", password)
+    source = replace_const(source, "kDefaultStatusUrl", status_url)
+
+    app_cpp.write_text(source, encoding="utf-8")
+
+    return jsonify({"ok": True, "ssid": ssid, "status_url": status_url})
+
+
 # ── Build ──
 
 @app.route("/api/build", methods=["POST"])

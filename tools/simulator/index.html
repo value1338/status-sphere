@@ -455,9 +455,7 @@ body {
   <div class="flash-bar">
     <input type="text" id="wifi-ssid" data-i18n-placeholder="wifiSsid" placeholder="WiFi SSID" style="width:140px">
     <input type="password" id="wifi-pass" data-i18n-placeholder="wifiPass" placeholder="WiFi Passwort" style="width:140px">
-    <button class="btn-green" onclick="pushWifi()" data-i18n="pushWifi">WiFi senden</button>
     <input type="text" id="status-url" data-i18n-placeholder="statusUrl" placeholder="JSON Status-URL" style="width:220px">
-    <button class="btn-gray" onclick="pushStatusUrl()" data-i18n="pushStatusUrl">URL senden</button>
   </div>
   <div class="status-line" id="status" data-i18n="statusDefault">Felder laden via Endpoint oder Demo klicken</div>
   <div class="display-frame" id="display"></div>
@@ -494,8 +492,8 @@ const I18N = {
     load:'Laden', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
     comPort:'COM-Port...', refreshPorts:'Ports aktualisieren', build:'Build', flash:'Flash',
     espIp:'ESP IP', pushColors:'Farben senden', pushSettings:'Einstellungen senden',
-    wifiSsid:'WiFi SSID', wifiPass:'WiFi Passwort', pushWifi:'WiFi senden',
-    statusUrl:'JSON Status-URL', pushStatusUrl:'URL senden',
+    wifiSsid:'WiFi SSID', wifiPass:'WiFi Passwort', statusUrl:'JSON Status-URL',
+    wifiBaked:'[config] WiFi + URL in Firmware geschrieben\n',
     statusDefault:'Felder laden via Endpoint oder Demo klicken',
     flashTitle:'Build / Flash', close:'Schließen',
     boardPanel:'Board / Display', boardPreset:'Board-Vorlage', boardCustom:'Benutzerdefiniert',
@@ -559,10 +557,6 @@ const I18N = {
     alertFlash:'Flash nur über den Python-Server verfügbar.', alertSelectPort:'Bitte zuerst einen COM-Port auswählen.',
     alertPushSettings:'Einstellungen senden nur über den Python-Server verfügbar.',
     alertEspIp:'ESP IP-Adresse eingeben.', alertPushColors:'Config-Push nur über den Python-Server verfügbar.',
-    alertPushWifi:'WiFi-Push nur über den Python-Server verfügbar.',
-    alertWifiSsid:'Bitte WiFi SSID eingeben.',
-    wifiSent:'WiFi-Daten gesendet! Status: ', urlSent:'Status-URL gesendet! Status: ',
-    alertPushUrl:'URL-Push nur über den Python-Server verfügbar.',
     alertNoArc:'Kein Ring-Element gefunden.', alertInvalidJson:'Ungültige JSON-Datei',
     settingsSent:'Display-Einstellungen gesendet! Status: ', colorsSent:'Farben gesendet! Status: ',
     errorPrefix:'Fehler: ', layoutSaved:'[layout] Editor-Layout gespeichert\n',
@@ -575,8 +569,8 @@ const I18N = {
     load:'Load', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
     comPort:'COM port...', refreshPorts:'Refresh ports', build:'Build', flash:'Flash',
     espIp:'ESP IP', pushColors:'Send colors', pushSettings:'Send settings',
-    wifiSsid:'WiFi SSID', wifiPass:'WiFi password', pushWifi:'Send WiFi',
-    statusUrl:'JSON status URL', pushStatusUrl:'Send URL',
+    wifiSsid:'WiFi SSID', wifiPass:'WiFi password', statusUrl:'JSON status URL',
+    wifiBaked:'[config] WiFi + URL baked into firmware\n',
     statusDefault:'Load fields via endpoint or click Demo',
     flashTitle:'Build / Flash', close:'Close',
     boardPanel:'Board / display', boardPreset:'Board preset', boardCustom:'Custom size',
@@ -640,10 +634,6 @@ const I18N = {
     alertFlash:'Flash only via Python server.', alertSelectPort:'Please select a COM port first.',
     alertPushSettings:'Send settings only via Python server.',
     alertEspIp:'Enter ESP IP address.', alertPushColors:'Config push only via Python server.',
-    alertPushWifi:'WiFi push only via Python server.',
-    alertWifiSsid:'Please enter WiFi SSID.',
-    wifiSent:'WiFi credentials sent! Status: ', urlSent:'Status URL sent! Status: ',
-    alertPushUrl:'URL push only via Python server.',
     alertNoArc:'No ring element found.', alertInvalidJson:'Invalid JSON file',
     settingsSent:'Display settings sent! Status: ', colorsSent:'Colors sent! Status: ',
     errorPrefix:'Error: ', layoutSaved:'[layout] Editor layout saved\n',
@@ -2343,10 +2333,22 @@ function streamJob(jobId) {
   });
 }
 
+async function bakeWifiConfig() {
+  const ssid = document.getElementById('wifi-ssid').value;
+  const pass = document.getElementById('wifi-pass').value;
+  const url = document.getElementById('status-url').value;
+  await fetch('/api/set-wifi-config', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({wifi_ssid:ssid, wifi_password:pass, status_url:url})
+  });
+  appendFlashLog(t('wifiBaked'));
+}
+
 async function startBuild() {
   if (!isFlaskServer) { alert(t('alertBuild')); return; }
   openFlashOverlay('Build');
   try {
+    await bakeWifiConfig();
     await fetch('/api/save-layout', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2367,6 +2369,7 @@ async function startFlash() {
 
   openFlashOverlay('Build + Flash — '+port);
   try {
+    await bakeWifiConfig();
     await fetch('/api/save-layout', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2407,41 +2410,6 @@ async function pushDisplaySettings() {
     const d = await r.json();
     if (d.error) alert(t('errorPrefix')+d.error);
     else alert(t('settingsSent')+d.status);
-  } catch(e) { alert(t('errorPrefix')+e.message); }
-}
-
-async function pushWifi() {
-  if (!isFlaskServer) { alert(t('alertPushWifi')); return; }
-  const espIp = document.getElementById('esp-ip').value.trim();
-  if (!espIp) { alert(t('alertEspIp')); return; }
-  const ssid = document.getElementById('wifi-ssid').value.trim();
-  if (!ssid) { alert(t('alertWifiSsid')); return; }
-  const password = document.getElementById('wifi-pass').value;
-  try {
-    const r = await fetch('/api/push-config', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ esp_ip: espIp, config: { wifi_ssid: ssid, wifi_password: password } }),
-    });
-    const d = await r.json();
-    if (d.error) alert(t('errorPrefix')+d.error);
-    else alert(t('wifiSent')+d.status);
-  } catch(e) { alert(t('errorPrefix')+e.message); }
-}
-
-async function pushStatusUrl() {
-  if (!isFlaskServer) { alert(t('alertPushUrl')); return; }
-  const espIp = document.getElementById('esp-ip').value.trim();
-  if (!espIp) { alert(t('alertEspIp')); return; }
-  const url = document.getElementById('status-url').value.trim();
-  if (!url) return;
-  try {
-    const r = await fetch('/api/push-config', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ esp_ip: espIp, config: { status_url: url } }),
-    });
-    const d = await r.json();
-    if (d.error) alert(t('errorPrefix')+d.error);
-    else alert(t('urlSent')+d.status);
   } catch(e) { alert(t('errorPrefix')+e.message); }
 }
 

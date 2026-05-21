@@ -16,6 +16,11 @@ namespace printsphere {
 namespace {
 
 constexpr char kTag[] = "status.app";
+
+// ── Hardcoded config (written by editor before build) ──
+constexpr char kWifiSsid[] = "";
+constexpr char kWifiPassword[] = "";
+constexpr char kDefaultStatusUrl[] = "";
 constexpr TickType_t kScreenOffTouchWakePollSlice = pdMS_TO_TICKS(25);
 constexpr TickType_t kUiCommandWakePollSlice = pdMS_TO_TICKS(50);
 
@@ -71,7 +76,13 @@ void Application::run() {
   ESP_ERROR_CHECK(wifi_manager_.initialize_network_stack());
   ESP_ERROR_CHECK(wifi_manager_.start_setup_access_point(config_store_.load_device_name()));
 
-  const WifiCredentials wifi_credentials = config_store_.load_wifi_credentials();
+  WifiCredentials wifi_credentials = config_store_.load_wifi_credentials();
+  if (kWifiSsid[0] != '\0' && wifi_credentials.ssid != kWifiSsid) {
+    ESP_LOGI(kTag, "Using hardcoded WiFi: %s", kWifiSsid);
+    wifi_credentials.ssid = kWifiSsid;
+    wifi_credentials.password = kWifiPassword;
+    config_store_.save_wifi_credentials(wifi_credentials);
+  }
   if (wifi_credentials.is_configured()) {
     const esp_err_t wifi_err = wifi_manager_.connect_station(wifi_credentials);
     if (wifi_err != ESP_OK) {
@@ -87,7 +98,13 @@ void Application::run() {
   ui_.set_display_settings(config_store_.load_display_settings());
   ESP_ERROR_CHECK(ui_.initialize());
 
-  status_client_.configure(config_store_.load_status_url());
+  std::string status_url = config_store_.load_status_url();
+  if (status_url.empty() && kDefaultStatusUrl[0] != '\0') {
+    ESP_LOGI(kTag, "Using hardcoded status URL: %s", kDefaultStatusUrl);
+    status_url = kDefaultStatusUrl;
+    config_store_.save_status_url(status_url);
+  }
+  status_client_.configure(status_url);
   ESP_ERROR_CHECK(status_client_.start());
 
   ESP_LOGI(kTag, "Bootstrap complete");

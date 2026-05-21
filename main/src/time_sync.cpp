@@ -149,4 +149,8 @@ void start_sntp_if_needed() {
   ESP_LOGI(kTag, "SNTP started (pool.ntp.org)");
 }
 
+bool is_clock_synced() {
+  return g_sntp_started && esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
+}
+
 }  // namespace printsphere::time_sync

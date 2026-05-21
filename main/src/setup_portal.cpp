@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "printsphere/msa2_status.hpp"
+#include "printsphere/time_sync.hpp"
 #include "printsphere/ui.hpp"
 
 namespace printsphere {
@@ -119,20 +120,45 @@ uint32_t parse_hex_color(const std::string& hex, uint32_t fallback) {
 SetupPortal* SetupPortal::instance() { return instance_; }
 
 esp_err_t SetupPortal::start() {
+  if (server_ != nullptr) {
+    return ESP_OK;
+  }
+
   instance_ = this;
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 14;
-  config.stack_size = 8192;
+  config.server_port = 80;
+  config.max_uri_handlers = 22;
+  config.stack_size = 12288;
   config.lru_purge_enable = true;
+  config.recv_wait_timeout = 30;
 
   ESP_RETURN_ON_ERROR(httpd_start(&server_, &config), kTag, "httpd_start failed");
+
+  auto register_captive = [&](const char* uri) -> esp_err_t {
+    httpd_uri_t captive_uri = {};
+    captive_uri.uri = uri;
+    captive_uri.method = HTTP_GET;
+    captive_uri.handler = &SetupPortal::handle_captive_redirect;
+    return httpd_register_uri_handler(server_, &captive_uri);
+  };
 
   httpd_uri_t root_uri = {};
   root_uri.uri = "/";
   root_uri.method = HTTP_GET;
   root_uri.handler = &SetupPortal::handle_root;
   ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &root_uri), kTag, "root handler failed");
+
+  static const char* kCaptiveUris[] = {
+      "/generate_204",
+      "/hotspot-detect.html",
+      "/library/test/success.html",
+      "/connecttest.txt",
+      "/ncsi.txt",
+  };
+  for (const char* uri : kCaptiveUris) {
+    ESP_RETURN_ON_ERROR(register_captive(uri), kTag, "captive redirect failed");
+  }
 
   httpd_uri_t health_uri = {};
   health_uri.uri = "/api/health";
@@ -154,6 +180,13 @@ esp_err_t SetupPortal::start() {
   config_post_uri.handler = &SetupPortal::handle_config_post;
   ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &config_post_uri), kTag,
                       "config post failed");
+
+  httpd_uri_t timezone_uri = {};
+  timezone_uri.uri = "/api/timezone";
+  timezone_uri.method = HTTP_POST;
+  timezone_uri.handler = &SetupPortal::handle_timezone_post;
+  ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &timezone_uri), kTag,
+                      "timezone handler failed");
 
   httpd_uri_t wifi_scan_uri = {};
   wifi_scan_uri.uri = "/api/wifi/scan";
@@ -183,8 +216,16 @@ esp_err_t SetupPortal::start() {
   ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server_, &display_post_uri), kTag,
                       "display settings post failed");
 
-  ESP_LOGI(kTag, "Setup portal ready");
+  ESP_LOGI(kTag, "Setup portal ready at http://%s/",
+           wifi_manager_.setup_access_point_ip().c_str());
   return ESP_OK;
+}
+
+esp_err_t SetupPortal::handle_captive_redirect(httpd_req_t* request) {
+  httpd_resp_set_status(request, "302 Found");
+  httpd_resp_set_hdr(request, "Location", "http://192.168.4.1/");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  return httpd_resp_send(request, nullptr, 0);
 }
 
 void SetupPortal::request_unlock_pin() {}
@@ -243,6 +284,9 @@ esp_err_t SetupPortal::handle_root(httpd_req_t* request) {
           "await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},"
           "body:JSON.stringify({wifi_ssid,wifi_password})});alert('Wi-Fi saved. Reboot may be "
           "needed if connection fails.');}";
+  html += "(async function(){try{const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;"
+          "if(tz){await fetch('/api/timezone',{method:'POST',headers:{'Content-Type':'application/json'},"
+          "body:JSON.stringify({tz_iana:tz})});}}catch(e){}})();";
   html += "</script></body></html>";
 
   httpd_resp_set_type(request, "text/html");
@@ -319,6 +363,34 @@ esp_err_t SetupPortal::handle_config_post(httpd_req_t* request) {
     portal->config_store_.save_wifi_credentials(credentials);
     portal->wifi_manager_.connect_station(credentials);
   }
+
+  send_json(request, "{\"ok\":true}");
+  return ESP_OK;
+}
+
+esp_err_t SetupPortal::handle_timezone_post(httpd_req_t* request) {
+  SetupPortal* portal = instance();
+  if (portal == nullptr) {
+    return ESP_FAIL;
+  }
+
+  cJSON* root = nullptr;
+  esp_err_t parse_err = receive_json_body(request, &root);
+  if (parse_err != ESP_OK) {
+    return parse_err;
+  }
+
+  const std::string tz_iana = read_string_field(root, "tz_iana");
+  cJSON_Delete(root);
+
+  if (!tz_iana.empty() && time_sync::iana_to_posix(tz_iana).empty()) {
+    return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "unsupported timezone");
+  }
+
+  ESP_LOGI(kTag, "Saving timezone: '%s'", tz_iana.c_str());
+  ESP_RETURN_ON_ERROR(portal->config_store_.save_timezone_iana(tz_iana), kTag,
+                      "save timezone failed");
+  time_sync::set_timezone_iana(tz_iana.empty() ? "Europe/Berlin" : tz_iana);
 
   send_json(request, "{\"ok\":true}");
   return ESP_OK;

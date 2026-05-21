@@ -1,5 +1,7 @@
 #include "printsphere/layout_renderer.hpp"
 
+#include "printsphere/time_sync.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -375,28 +377,28 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
           set_label_text_if_changed(dl.obj,
               std::to_string(snapshot.fields.size()).c_str());
         } else if (dl.field == "_time") {
-          time_t now = 0;
-          time(&now);
-          struct tm ti = {};
-          localtime_r(&now, &ti);
-          char tbuf[16] = {};
-          std::strftime(tbuf, sizeof(tbuf), "%H:%M", &ti);
-          if (ti.tm_year > 70) {
-            set_label_text_if_changed(dl.obj, tbuf);
-          } else {
+          if (!time_sync::is_clock_synced()) {
             set_label_text_if_changed(dl.obj, "--:--");
+          } else {
+            time_t now = 0;
+            time(&now);
+            struct tm ti = {};
+            localtime_r(&now, &ti);
+            char tbuf[16] = {};
+            std::strftime(tbuf, sizeof(tbuf), "%H:%M", &ti);
+            set_label_text_if_changed(dl.obj, tbuf);
           }
         } else if (dl.field == "_date") {
-          time_t now = 0;
-          time(&now);
-          struct tm ti = {};
-          localtime_r(&now, &ti);
-          char dbuf[16] = {};
-          std::strftime(dbuf, sizeof(dbuf), "%d.%m.%Y", &ti);
-          if (ti.tm_year > 70) {
-            set_label_text_if_changed(dl.obj, dbuf);
-          } else {
+          if (!time_sync::is_clock_synced()) {
             set_label_text_if_changed(dl.obj, "--.--.----");
+          } else {
+            time_t now = 0;
+            time(&now);
+            struct tm ti = {};
+            localtime_r(&now, &ti);
+            char dbuf[16] = {};
+            std::strftime(dbuf, sizeof(dbuf), "%d.%m.%Y", &ti);
+            set_label_text_if_changed(dl.obj, dbuf);
           }
         } else if (dl.field == "_battery_icon") {
           const char* icon;

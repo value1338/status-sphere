@@ -42,9 +42,11 @@ class SetupPortal {
 
  private:
   static esp_err_t handle_root(httpd_req_t* request);
+  static esp_err_t handle_captive_redirect(httpd_req_t* request);
   static esp_err_t handle_health(httpd_req_t* request);
   static esp_err_t handle_config_get(httpd_req_t* request);
   static esp_err_t handle_config_post(httpd_req_t* request);
+  static esp_err_t handle_timezone_post(httpd_req_t* request);
   static esp_err_t handle_wifi_scan(httpd_req_t* request);
   static esp_err_t handle_arc_colors_post(httpd_req_t* request);
   static esp_err_t handle_display_settings_get(httpd_req_t* request);

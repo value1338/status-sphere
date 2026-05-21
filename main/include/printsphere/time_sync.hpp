@@ -29,4 +29,7 @@ std::vector<std::string_view> supported_iana_zones();
 // acquired so the system clock can sync against pool.ntp.org.
 void start_sntp_if_needed();
 
+// True after SNTP has set the system clock at least once.
+bool is_clock_synced();
+
 }  // namespace printsphere::time_sync

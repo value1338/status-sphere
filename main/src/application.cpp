@@ -62,7 +62,11 @@ void Application::run() {
   ESP_LOGI(kTag, "Bootstrapping Status Sphere");
 
   ESP_ERROR_CHECK(config_store_.initialize());
-  time_sync::set_timezone_iana(config_store_.load_timezone_iana());
+  std::string timezone = config_store_.load_timezone_iana();
+  if (timezone.empty()) {
+    timezone = "Europe/Berlin";
+  }
+  time_sync::set_timezone_iana(timezone);
   ESP_ERROR_CHECK(configure_power_management());
   ESP_ERROR_CHECK(wifi_manager_.initialize_network_stack());
   ESP_ERROR_CHECK(wifi_manager_.start_setup_access_point(config_store_.load_device_name()));

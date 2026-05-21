@@ -295,7 +295,7 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
           lv_obj_set_pos(label, x, y);
         }
 
-        lv_label_set_text(label, dl.static_text.c_str());
+        lv_label_set_text(label, translate_static(dl.static_text.c_str()));
 
         if (!dl.setting_key.empty() || dl.field == "_wifi") {
           lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
@@ -459,7 +459,7 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
       } else if (!dl.setting_key.empty()) {
         // handled in update_settings
       } else {
-        set_label_text_if_changed(dl.obj, dl.static_text.c_str());
+        set_label_text_if_changed(dl.obj, translate_static(dl.static_text.c_str()));
       }
     }
 
@@ -529,6 +529,57 @@ bool LayoutRenderer::consume_wifi_reset() {
 
 const char* LayoutRenderer::tr(const char* de, const char* en) const {
   return (locale_ == "en") ? en : de;
+}
+
+const char* LayoutRenderer::translate_static(const char* text) const {
+  if (text == nullptr || locale_ != "en") {
+    return text;
+  }
+  struct Pair {
+    const char* de;
+    const char* en;
+  };
+  static const Pair kMap[] = {
+      {"Batterie", "Battery"},
+      {"Uhrzeit", "Time"},
+      {"Datum", "Date"},
+      {"Verbrauch", "Consumption"},
+      {"Energie", "Energy"},
+      {"Netz", "Grid"},
+      {"Leistung", "Power"},
+      {"Spannung", "Voltage"},
+      {"Strom", "Current"},
+      {"Temperatur", "Temperature"},
+      {"Status", "Status"},
+      {"Frequenz", "Frequency"},
+      {"Übersicht", "Overview"},
+      {"Sensoren", "Sensors"},
+      {"System", "System"},
+      {"Einstellungen", "Settings"},
+      {"Helligkeit", "Brightness"},
+      {"Kontrast", "Contrast"},
+      {"Bildschirm aus", "Screen off"},
+      {"Wi-Fi", "Wi-Fi"},
+      {"Felder", "Fields"},
+      {"Aktualisiert", "Updated"},
+      {"Anzahl Felder", "Field count"},
+      {"WiFi-Status", "WiFi status"},
+      {"IP-Adresse", "IP address"},
+      {"Setup-AP SSID", "Setup AP SSID"},
+      {"Letztes Update", "Last update"},
+      {"Batterie %", "Battery %"},
+      {"Batterie-Icon", "Battery icon"},
+      {"Netzleistung", "Grid power"},
+      {"Invert", "Invert"},
+      {"Temp: --°C  Feuchte: --%", "Temp: --°C  Humidity: --%"},
+      {"offline", "offline"},
+  };
+  for (const auto& pair : kMap) {
+    if (std::strcmp(text, pair.de) == 0) {
+      return pair.en;
+    }
+  }
+  return text;
 }
 
 void LayoutRenderer::setting_click_cb(lv_event_t* event) {

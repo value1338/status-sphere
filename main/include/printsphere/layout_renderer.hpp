@@ -71,6 +71,7 @@ class LayoutRenderer {
 
  private:
   const char* tr(const char* de, const char* en) const;
+  const char* translate_static(const char* text) const;
 
   std::string locale_ = "de";
   static void setting_click_cb(lv_event_t* event);

@@ -542,6 +542,9 @@ const I18N = {
     tpl_screenOff:'Bildschirm aus', tpl_wifi:'Wi-Fi', tpl_fields:'Felder', tpl_updated:'Aktualisiert',
     tpl_power:'Leistung', tpl_voltage:'Spannung', tpl_current:'Strom', tpl_temp:'Temperatur',
     tpl_status:'Status', tpl_freq:'Frequenz', tpl_consumption:'Verbrauch',
+    yes:'ja', no:'nein', layerEmpty:'Leer — Felder hierhin ziehen<br>oder Vorlage wählen',
+    ringLayer:'Ring', ent_offline:'offline', ent_invert:'Invert',
+    ent_sensor_ht:'Temp: --°C  Feuchte: --%',
     alertPorts:'Ports nur über den Python-Server verfügbar.\\nStarte: python tools/editor/server.py',
     alertPortsFail:'Ports laden fehlgeschlagen: ', alertBuild:'Build nur über den Python-Server verfügbar.',
     alertFlash:'Flash nur über den Python-Server verfügbar.', alertSelectPort:'Bitte zuerst einen COM-Port auswählen.',
@@ -614,6 +617,9 @@ const I18N = {
     tpl_screenOff:'Screen off', tpl_wifi:'Wi-Fi', tpl_fields:'Fields', tpl_updated:'Updated',
     tpl_power:'Power', tpl_voltage:'Voltage', tpl_current:'Current', tpl_temp:'Temperature',
     tpl_status:'Status', tpl_freq:'Frequency', tpl_consumption:'Consumption',
+    yes:'yes', no:'no', layerEmpty:'Empty — drag fields here<br>or pick a template',
+    ringLayer:'Ring', ent_offline:'offline', ent_invert:'Invert',
+    ent_sensor_ht:'Temp: --°C  Humidity: --%',
     alertPorts:'Ports only via Python server.\\nRun: python tools/editor/server.py',
     alertPortsFail:'Failed to load ports: ', alertBuild:'Build only via Python server.',
     alertFlash:'Flash only via Python server.', alertSelectPort:'Please select a COM port first.',
@@ -667,11 +673,84 @@ function setLang(l) {
   renderTemplateSelect();
   renderDisplayDefaultsPanel();
   renderSystemFieldList();
+  _i18nTextToKey = null;
+  save();
   renderAll();
 }
 
 function toggleLang() {
   setLang(lang === 'de' ? 'en' : 'de');
+}
+
+/** Bekannte Label-Texte (DE/EN) → i18n-Key für Anzeige ohne JSON umzuschreiben */
+let _i18nTextToKey = null;
+const I18N_LABEL_KEY_PREFIXES = ['pn_', 'sf_', 'tpl_', 'ent_'];
+const I18N_LABEL_EXTRA_KEYS = ['brightness', 'contrast', 'invertColors', 'never', 'normal', 'inverted'];
+
+function buildI18nTextToKey() {
+  const m = new Map();
+  const allKeys = new Set(I18N_LABEL_EXTRA_KEYS);
+  for (const k of Object.keys(I18N.de)) {
+    if (I18N_LABEL_KEY_PREFIXES.some(p => k.startsWith(p))) allKeys.add(k);
+  }
+  for (const k of allKeys) {
+    const de = I18N.de[k];
+    const en = I18N.en[k];
+    if (de) m.set(String(de).trim().toLowerCase(), k);
+    if (en) m.set(String(en).trim().toLowerCase(), k);
+  }
+  m.set('invert', 'ent_invert');
+  return m;
+}
+
+function getI18nTextToKey() {
+  if (!_i18nTextToKey) _i18nTextToKey = buildI18nTextToKey();
+  return _i18nTextToKey;
+}
+
+function localeTag() {
+  return lang === 'en' ? 'en-GB' : 'de-DE';
+}
+
+function translateLabelText(text) {
+  if (!text) return '';
+  const key = getI18nTextToKey().get(String(text).trim().toLowerCase());
+  return key ? t(key) : text;
+}
+
+function elementDisplayText(el) {
+  if (!el) return '';
+  if (el._settingKey) return settingValueText(el._settingKey);
+  if (el.field && liveData) return resolveField(el);
+  if (el.field) {
+    if (el.field.startsWith('_')) {
+      const pk = 'pn_' + el.field;
+      if (t(pk) !== pk) return t(pk);
+      const sk = 'sf_' + el.field.slice(1);
+      if (t(sk) !== sk) return t(sk);
+    } else {
+      const pk = 'pn_' + el.field;
+      if (t(pk) !== pk) return t(pk);
+    }
+  }
+  return translateLabelText(el.text || '');
+}
+
+const PAGE_NAME_I18N_KEYS = [
+  'tpl_energy', 'tpl_battery', 'tpl_grid', 'tpl_sensors', 'tpl_system',
+  'tpl_overview', 'tpl_systemSettings',
+];
+
+function displayPageName(name) {
+  if (!name) return '';
+  for (const k of PAGE_NAME_I18N_KEYS) {
+    if (name === I18N.de[k] || name === I18N.en[k]) return t(k);
+  }
+  let m = name.match(/^Seite\s+(\d+)(\s+\(Kopie\))?$/i);
+  if (m) return t('pageDefault') + ' ' + m[1] + (m[2] ? t('pageCopy') : '');
+  m = name.match(/^Page\s+(\d+)(\s+\(copy\))?$/i);
+  if (m) return t('pageDefault') + ' ' + m[1] + (m[2] ? t('pageCopy') : '');
+  return name;
 }
 
 function renderTemplateSelect() {
@@ -1006,7 +1085,7 @@ function renderPageTabs() {
   pages.forEach((p,i) => {
     const d = document.createElement('div');
     d.className = 'page-tab'+(i===currentPageIdx?' active':'');
-    d.innerHTML = `<span>${esc(p.name)}</span><span style="font-size:10px;opacity:0.5">${p.elements.length}</span>`;
+    d.innerHTML = `<span>${esc(displayPageName(p.name))}</span><span style="font-size:10px;opacity:0.5">${p.elements.length}</span>`;
     d.onclick = () => switchPage(i);
     c.appendChild(d);
   });
@@ -1027,13 +1106,15 @@ function renderLayerList() {
   const c = document.getElementById('layer-list');
   c.innerHTML = '';
   if (curElements().length === 0) {
-    c.innerHTML = '<div class="field-empty">Leer — Felder hierhin ziehen<br>oder Vorlage wählen</div>';
+    c.innerHTML = '<div class="field-empty">'+t('layerEmpty')+'</div>';
     return;
   }
   curElements().forEach(el => {
     const d = document.createElement('div');
     d.className = 'layer-item'+(el.id===selectedId?' selected':'');
-    const lbl = el.type==='arc' ? `◌ Ring (${el.field||'arc'})` : `T "${(el.text||'').substring(0,16)}"`;
+    const lbl = el.type==='arc'
+      ? `◌ ${t('ringLayer')} (${el.field||'arc'})`
+      : `T "${elementDisplayText(el).substring(0, 20)}"`;
     const grpIcon = el._group ? '<span title="Gruppiert" style="color:#3b82f6;font-size:10px">🔗</span>' : '';
     d.innerHTML = `<span>${grpIcon}${lbl}</span><span style="display:flex;gap:2px"><button class="del-btn" title="Kopieren" style="color:#3b82f6">⧉</button><button class="del-btn" title="Löschen">✕</button></span>`;
     const btns = d.querySelectorAll('.del-btn');
@@ -1111,8 +1192,9 @@ function renderFieldList() {
     d.draggable = true;
     d.dataset.field = key;
     const v = obj?.value;
-    const vStr = v==null?'--': typeof v==='boolean'?(v?'ja':'nein'): typeof v==='number'?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1)): String(v);
-    d.innerHTML = `<span class="f-name">${esc(key)}</span><span class="f-val">${esc(vStr)}</span><button class="f-add" title="${t('addText')}">${t('addTextBtn')}</button>`;
+    const vStr = v==null?'--': typeof v==='boolean'?(v?t('yes'):t('no')): typeof v==='number'?(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1)): String(v);
+    const name = prettyName(key);
+    d.innerHTML = `<span class="f-name">${esc(name)}</span><span class="f-val">${esc(vStr)}</span><button class="f-add" title="${t('addText')}">${t('addTextBtn')}</button>`;
     d.querySelector('.f-add').onclick = ev => { ev.stopPropagation(); addFieldAsLabel(key); };
     d.addEventListener('dragstart', ev => {
       ev.dataTransfer.setData('text/plain', key);
@@ -1254,7 +1336,7 @@ function buildTemplate(name) {
     const fields = liveData ? Object.keys(liveData) : ['soc','bat_p','sys_pv_p','sys_load_p','sys_grid_p'];
     let y = 100;
     for (const f of fields.slice(0, 8)) {
-      row(y, f, f, guessUnit(f));
+      row(y, prettyName(f), f, guessUnit(f));
       y += 44;
     }
   } else if (name==='dual-ring') {
@@ -1267,13 +1349,13 @@ function buildTemplate(name) {
   } else if (name==='sensors') {
     lbl(233,48,t('tpl_sensors'),28,'600','#ffffff');
     lbl(233,110,'Shelly H&T 1',18,'600','#22c55e');
-    lbl(233,135,'Temp: --°C  Feuchte: --%',14,'400','#94a3b8','middle','_sensor_ht');
+    lbl(233,135,t('ent_sensor_ht'),14,'400','#94a3b8','middle','_sensor_ht');
     lbl(233,190,'Shelly H&T 2',18,'600','#666666');
-    lbl(233,215,'offline',14,'400','#475569','middle','_sensor_ht2');
+    lbl(233,215,t('ent_offline'),14,'400','#475569','middle','_sensor_ht2');
     lbl(233,270,'Shelly H&T 3',18,'600','#666666');
-    lbl(233,295,'offline',14,'400','#475569','middle','_sensor_ht3');
+    lbl(233,295,t('ent_offline'),14,'400','#475569','middle','_sensor_ht3');
     lbl(233,350,'Shelly H&T 4',18,'600','#666666');
-    lbl(233,375,'offline',14,'400','#475569','middle','_sensor_ht4');
+    lbl(233,375,t('ent_offline'),14,'400','#475569','middle','_sensor_ht4');
   } else if (name==='system') {
     lbl(233,48,t('tpl_system'),28,'600','#ffffff');
     row(110,t('tpl_wifi'),'_wifi','');
@@ -1291,7 +1373,7 @@ function buildTemplate(name) {
     };
     settingRow(120,t('brightness'),'brightness');
     settingRow(168,t('contrast'),'contrast');
-    settingRow(216,'Invert','invert');
+    settingRow(216,t('ent_invert'),'invert');
     settingRow(264,t('tpl_screenOff'),'screenOff');
     row(320,t('tpl_wifi'),'_wifi','');
     row(364,t('tpl_fields'),'_fieldcount','');
@@ -1516,8 +1598,7 @@ function renderLabel(parent, el) {
   if (el.anchor==='middle') d.style.transform='translateX(-50%)';
   else if (el.anchor==='end') d.style.transform='translateX(-100%)';
 
-  let text = el.text||'';
-  if (el.field&&liveData) text = resolveField(el);
+  const text = elementDisplayText(el);
   const sp = document.createElement('span');
   sp.textContent = text;
   d.appendChild(sp);
@@ -1533,12 +1614,13 @@ function renderLabel(parent, el) {
 }
 
 function resolveField(el) {
-  if (!liveData||!el.field) return el.text||'--';
-  if (el.field==='_detail') return 'Connected';
+  if (!liveData||!el.field) return translateLabelText(el.text)||'--';
+  if (el.field==='_detail') return lang === 'en' ? 'Connected' : 'Verbunden';
   if (el.field==='_wifi') return t('wifi_connected');
   if (el.field==='_fieldcount') return String(Object.keys(liveData).length);
-  if (el.field==='_time') return new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-  if (el.field==='_date') return new Date().toLocaleDateString('de-DE');
+  const loc = localeTag();
+  if (el.field==='_time') return new Date().toLocaleTimeString(loc,{hour:'2-digit',minute:'2-digit'});
+  if (el.field==='_date') return new Date().toLocaleDateString(loc);
   if (el.field==='_battery_icon') return '🔋';
   if (el.field==='_battery_pct') return '85%';
   if (el.field==='_ip') return '192.168.1.x';
@@ -1546,12 +1628,13 @@ function resolveField(el) {
   if (el.field==='_uptime') return t('active');
   if (el.field.startsWith('_sensor_')) {
     const pfx=el.field.replace('_sensor_','');
-    if (liveData[pfx+'_online']?.value!==true) return 'offline';
-    return `Temp: ${fmtV(liveData[pfx+'_temp'],'°C')}  Feuchte: ${fmtV(liveData[pfx+'_hum'],'%')}`;
+    if (liveData[pfx+'_online']?.value!==true) return t('ent_offline');
+    const hum = lang === 'en' ? 'Humidity' : 'Feuchte';
+    return `Temp: ${fmtV(liveData[pfx+'_temp'],'°C')}  ${hum}: ${fmtV(liveData[pfx+'_hum'],'%')}`;
   }
   const f=liveData[el.field];
   if (!f||f.value==null) return '--'+(el.suffix||'');
-  if (typeof f.value==='boolean') return f.value?'ja':'nein';
+  if (typeof f.value==='boolean') return f.value?t('yes'):t('no');
   if (typeof f.value==='string') return f.value+(el.suffix||'');
   if (el.format==='int') return Math.round(f.value)+(el.suffix||'');
   return (Math.abs(f.value)>=100?f.value.toFixed(0):f.value.toFixed(1))+(el.suffix||'');

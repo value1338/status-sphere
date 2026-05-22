@@ -15,6 +15,8 @@ import subprocess
 import sys
 import threading
 import time
+import base64
+import re
 from pathlib import Path
 
 import requests
@@ -26,6 +28,8 @@ app = Flask(__name__, static_folder=None)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SIMULATOR_DIR = PROJECT_ROOT / "tools" / "simulator"
 BUILD_DIR = PROJECT_ROOT / "build"
+ASSETS_DIR = PROJECT_ROOT / "main" / "resources" / "assets"
+CONVERT_SCRIPT = PROJECT_ROOT / "tools" / "editor" / "convert_assets.py"
 
 flash_log_queues: dict[str, queue.Queue] = {}
 flash_processes: dict[str, subprocess.Popen] = {}
@@ -81,13 +85,94 @@ def list_ports():
 
 # ── Layout save ──
 
+def _safe_asset_filename(asset_id: str) -> str | None:
+    if not asset_id or not re.fullmatch(r"[a-zA-Z0-9_\-]+", asset_id):
+        return None
+    return asset_id
+
+
+def _persist_layout_assets(data: dict) -> list[str]:
+    """Save uploaded image bytes to resources/assets and regenerate LVGL C sources."""
+    saved: list[str] = []
+    assets = data.get("assets")
+    if not isinstance(assets, dict):
+        return saved
+
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    referenced = set()
+    for page in data.get("pages") or []:
+        for el in page.get("elements") or []:
+            if el.get("type") == "image" and el.get("asset"):
+                referenced.add(el["asset"])
+
+    for asset_id, meta in assets.items():
+        safe = _safe_asset_filename(asset_id)
+        if safe is None or not isinstance(meta, dict):
+            continue
+        raw_b64 = meta.get("data")
+        if not raw_b64:
+            continue
+        try:
+            raw = base64.b64decode(raw_b64)
+        except (ValueError, TypeError):
+            continue
+        ext = ".png"
+        mime = (meta.get("mime") or "").lower()
+        if "jpeg" in mime or "jpg" in mime:
+            ext = ".jpg"
+        elif "webp" in mime:
+            ext = ".webp"
+        elif "gif" in mime:
+            ext = ".gif"
+        elif "bmp" in mime:
+            ext = ".bmp"
+        out_path = ASSETS_DIR / f"{safe}{ext}"
+        out_path.write_bytes(raw)
+        saved.append(str(out_path))
+
+    # Remove orphaned asset files no longer referenced
+    if ASSETS_DIR.is_dir():
+        for stale in ASSETS_DIR.iterdir():
+            if stale.is_file() and stale.stem not in referenced:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
+    return saved
+
+
+def _layout_for_firmware(data: dict) -> dict:
+    """Strip editor-only asset payloads from layout.json on disk."""
+    out = dict(data)
+    out.pop("assets", None)
+    return out
+
+
 @app.route("/api/save-layout", methods=["POST"])
 def save_layout():
     data = request.get_json(silent=True) or {}
     layout_path = PROJECT_ROOT / "main" / "resources" / "layout.json"
     layout_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _persist_layout_assets(data)
+
     with open(layout_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(_layout_for_firmware(data), f, indent=2)
+
+    convert = subprocess.run(
+        [sys.executable, str(CONVERT_SCRIPT), "--layout", str(layout_path)],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if convert.returncode != 0:
+        return jsonify({
+            "ok": False,
+            "error": "asset conversion failed",
+            "stderr": convert.stderr,
+            "stdout": convert.stdout,
+        }), 500
 
     # Force rebuild of embedded layout by removing ALL cached artifacts
     deleted = []
@@ -98,8 +183,28 @@ def save_layout():
                 deleted.append(str(stale))
             except OSError:
                 pass
+        for stale in BUILD_DIR.rglob("*layout_assets_registry*"):
+            try:
+                stale.unlink()
+                deleted.append(str(stale))
+            except OSError:
+                pass
 
     return jsonify({"ok": True, "path": str(layout_path), "deleted_cache": deleted})
+
+
+@app.route("/api/assets/<asset_id>")
+def get_asset(asset_id):
+    safe = _safe_asset_filename(asset_id)
+    if safe is None:
+        return jsonify({"error": "invalid asset id"}), 400
+    if not ASSETS_DIR.is_dir():
+        return jsonify({"error": "not found"}), 404
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        path = ASSETS_DIR / f"{safe}{ext}"
+        if path.is_file():
+            return send_from_directory(str(ASSETS_DIR), path.name)
+    return jsonify({"error": "not found"}), 404
 
 
 # ── WiFi config bake (write credentials into application.cpp before build) ──

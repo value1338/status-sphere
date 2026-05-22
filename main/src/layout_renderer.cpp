@@ -1,5 +1,6 @@
 #include "printsphere/layout_renderer.hpp"
 
+#include "printsphere/layout_assets_registry.hpp"
 #include "printsphere/time_sync.hpp"
 
 #include <algorithm>
@@ -68,50 +69,71 @@ void set_label_text_if_changed(lv_obj_t* label, const char* text) {
   lv_label_set_text(label, text);
 }
 
-void layout_curved_text(lv_obj_t* parent, DynLabel& dl,
-                        const char* text, int lw, int lh) {
-  for (auto* cl : dl.char_labels) {
-    lv_obj_delete(cl);
+#if LV_USE_ARCLABEL
+void refine_arclabel_arc_slot(lv_obj_t* arclabel, const DynLabel& dl) {
+  const lv_value_precise_t text_angle = lv_arclabel_get_text_angle(arclabel);
+  int span = static_cast<int>(text_angle) + 12;
+  span = std::clamp(span, 20, 180);
+  lv_arclabel_set_angle_size(arclabel, span);
+  lv_arclabel_set_angle_start(arclabel, dl.start_angle - span / 2);
+}
+
+void setup_curved_arclabel(lv_obj_t* arclabel, const DynLabel& dl, int lw, int lh) {
+  lv_obj_set_size(arclabel, lw, lh);
+  lv_obj_set_pos(arclabel, 0, 0);
+  lv_obj_set_style_text_font(arclabel, dl.font, LV_PART_MAIN);
+  lv_obj_set_style_text_color(arclabel, dl.text_color, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(arclabel, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(arclabel, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(arclabel, 0, LV_PART_MAIN);
+
+  const int r = std::abs(dl.radius);
+  lv_arclabel_set_radius(arclabel, static_cast<uint32_t>(r));
+  lv_arclabel_set_overflow(arclabel, LV_ARCLABEL_OVERFLOW_VISIBLE);
+
+  const double sin_a = std::sin(static_cast<double>(dl.start_angle) * M_PI / 180.0);
+  const bool at_bottom = sin_a > 0.0;
+  const bool outward_bottom = at_bottom != dl.curve_flip;
+
+  if (outward_bottom) {
+    lv_arclabel_set_dir(arclabel, LV_ARCLABEL_DIR_COUNTER_CLOCKWISE);
+    lv_arclabel_set_text_vertical_align(arclabel, LV_ARCLABEL_TEXT_ALIGN_TRAILING);
+  } else {
+    lv_arclabel_set_dir(arclabel, LV_ARCLABEL_DIR_CLOCKWISE);
+    lv_arclabel_set_text_vertical_align(arclabel, LV_ARCLABEL_TEXT_ALIGN_LEADING);
   }
-  dl.char_labels.clear();
 
-  if (text == nullptr || text[0] == '\0') return;
-
-  const int cx = lw / 2;
-  const int cy = lh / 2;
-  const int r = dl.radius;
-  const lv_font_t* font = lv_obj_get_style_text_font(dl.obj, 0);
-  const lv_color_t color = lv_obj_get_style_text_color(dl.obj, 0);
-
-  int char_w = lv_font_get_glyph_width(font, 'M', 0);
-  if (char_w <= 0) char_w = font->line_height / 2;
-  double angle_per_char = (static_cast<double>(char_w) + 2.0) / static_cast<double>(r);
-  double angle_per_char_deg = angle_per_char * 180.0 / M_PI;
-
-  int len = static_cast<int>(std::strlen(text));
-  double total_deg = static_cast<double>(len) * angle_per_char_deg;
-  double start = static_cast<double>(dl.start_angle) - total_deg / 2.0;
-
-  for (int i = 0; i < len; ++i) {
-    double a_deg = start + static_cast<double>(i) * angle_per_char_deg;
-    double a_rad = a_deg * M_PI / 180.0;
-    int px = cx + static_cast<int>(std::round(r * std::cos(a_rad))) - char_w / 2;
-    int py = cy + static_cast<int>(std::round(r * std::sin(a_rad))) - font->line_height / 2;
-
-    lv_obj_t* ch = lv_label_create(parent);
-    lv_obj_set_style_text_font(ch, font, 0);
-    lv_obj_set_style_text_color(ch, color, 0);
-    char buf[5] = {};
-    buf[0] = text[i];
-    lv_label_set_text(ch, buf);
-    lv_obj_set_pos(ch, px, py);
-    int rot = static_cast<int>(a_deg + 90) % 360;
-    lv_obj_set_style_transform_rotation(ch, rot * 10, 0);
-    lv_obj_set_style_transform_pivot_x(ch, char_w / 2, 0);
-    lv_obj_set_style_transform_pivot_y(ch, font->line_height / 2, 0);
-    make_input_pass_through(ch);
-    dl.char_labels.push_back(ch);
+  lv_arclabel_text_align_t halign = LV_ARCLABEL_TEXT_ALIGN_CENTER;
+  if (dl.anchor == "end") {
+    halign = LV_ARCLABEL_TEXT_ALIGN_TRAILING;
+  } else if (dl.anchor == "start") {
+    halign = LV_ARCLABEL_TEXT_ALIGN_LEADING;
   }
+  lv_arclabel_set_text_horizontal_align(arclabel, halign);
+
+  constexpr int kInitialSpan = 90;
+  lv_arclabel_set_angle_start(arclabel, dl.start_angle - kInitialSpan / 2);
+  lv_arclabel_set_angle_size(arclabel, kInitialSpan);
+  make_input_pass_through(arclabel);
+}
+
+void set_arclabel_text_if_changed(DynLabel& dl, const char* text) {
+  if (dl.obj == nullptr || text == nullptr) return;
+  if (dl.curved_cache == text) return;
+  lv_arclabel_set_text(dl.obj, text);
+  refine_arclabel_arc_slot(dl.obj, dl);
+  dl.curved_cache = text;
+}
+#endif
+
+void set_dynlabel_text_if_changed(DynLabel& dl, const char* text) {
+#if LV_USE_ARCLABEL
+  if (dl.radius != 0) {
+    set_arclabel_text_if_changed(dl, text);
+    return;
+  }
+#endif
+  set_dynlabel_text_if_changed(dl, text);
 }
 
 }  // namespace
@@ -247,6 +269,11 @@ bool LayoutRenderer::load_from_embedded() {
           }
 
           dp.arcs.push_back(da);
+        } else if (std::strcmp(type, "image") == 0) {
+          DynImage di;
+          di.asset = cjson_string(el, "asset");
+          di.opacity = static_cast<int>(cjson_number(el, "opacity", 255));
+          dp.images.push_back(std::move(di));
         }
       }
     }
@@ -257,10 +284,11 @@ bool LayoutRenderer::load_from_embedded() {
   ESP_LOGI(kTag, "Loaded %d pages from embedded layout (json=%u bytes)",
            static_cast<int>(pages_.size()), static_cast<unsigned>(len));
   for (int i = 0; i < static_cast<int>(pages_.size()); ++i) {
-    ESP_LOGI(kTag, "  Page %d '%s': %d labels, %d arcs",
+    ESP_LOGI(kTag, "  Page %d '%s': %d labels, %d arcs, %d images",
              i, pages_[i].name.c_str(),
              static_cast<int>(pages_[i].labels.size()),
-             static_cast<int>(pages_[i].arcs.size()));
+             static_cast<int>(pages_[i].arcs.size()),
+             static_cast<int>(pages_[i].images.size()));
   }
   return true;
 #endif
@@ -305,6 +333,7 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
 
     int label_idx = 0;
     int arc_idx = 0;
+    int image_idx = 0;
 
     for (int ei = 0; ei < el_count; ++ei) {
       cJSON* el = cJSON_GetArrayItem(elements, ei);
@@ -324,19 +353,35 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
         uint32_t color = parse_css_color(cjson_string(el, "color", "#ffffff"));
         dl.radius = static_cast<int>(cjson_number(el, "radius", 0));
         dl.start_angle = static_cast<int>(cjson_number(el, "startAngle", 0));
+        dl.curve_flip = cJSON_IsTrue(cJSON_GetObjectItem(el, "curveFlip"));
+        dl.anchor = anchor;
 
         const lv_font_t* font = (std::strcmp(font_family, "MDI") == 0)
             ? (font_size >= 35 ? &mdi_40 : &mdi_30) : pick_font(font_size);
         if (std::strcmp(font_family, "MDI") == 0) dl.is_icon = true;
+        dl.font = font;
+        dl.text_color = lv_color_hex(color);
 
-        lv_obj_t* label = lv_label_create(dp.page_obj);
-        lv_obj_set_style_text_font(label, font, 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-
-        if (dl.radius > 0) {
-          lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+        if (dl.radius != 0) {
+#if LV_USE_ARCLABEL
+          lv_obj_t* arclabel = lv_arclabel_create(dp.page_obj);
+          dl.obj = arclabel;
+          setup_curved_arclabel(arclabel, dl, layout_width(), layout_height());
+          const char* initial = dl.field.empty()
+              ? translate_static(dl.static_text.c_str())
+              : "--";
+          set_arclabel_text_if_changed(dl, initial);
+#else
+          lv_obj_t* label = lv_label_create(dp.page_obj);
+          lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+          lv_obj_set_style_text_color(label, lv_color_hex(color), LV_PART_MAIN);
           dl.obj = label;
+#endif
         } else {
+          lv_obj_t* label = lv_label_create(dp.page_obj);
+          lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+          lv_obj_set_style_text_color(label, lv_color_hex(color), LV_PART_MAIN);
+
           if (std::strcmp(anchor, "middle") == 0) {
             lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_align(label, LV_ALIGN_TOP_MID, x - (layout_width() / 2), y);
@@ -348,16 +393,18 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
           }
 
           lv_label_set_text(label, translate_static(dl.static_text.c_str()));
+          dl.obj = label;
+        }
 
+        if (dl.obj != nullptr) {
           if (!dl.setting_key.empty() || dl.field == "_wifi") {
-            lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(label, 15);
-            lv_obj_add_event_cb(label, &LayoutRenderer::setting_click_cb,
+            lv_obj_add_flag(dl.obj, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(dl.obj, 15);
+            lv_obj_add_event_cb(dl.obj, &LayoutRenderer::setting_click_cb,
                                 LV_EVENT_SHORT_CLICKED, this);
           } else {
-            make_input_pass_through(label);
+            make_input_pass_through(dl.obj);
           }
-          dl.obj = label;
         }
 
       } else if (std::strcmp(type, "arc") == 0) {
@@ -395,6 +442,34 @@ void LayoutRenderer::build_pages(lv_obj_t* pager, DisplaySettings* live_settings
 
         lv_obj_set_style_arc_color(arc, lv_color_hex(da.color_static), LV_PART_INDICATOR);
         da.obj = arc;
+      } else if (std::strcmp(type, "image") == 0) {
+        if (image_idx >= static_cast<int>(dp.images.size())) continue;
+        DynImage& di = dp.images[image_idx++];
+
+        const char* asset_id = cjson_string(el, "asset");
+        if (asset_id == nullptr || asset_id[0] == '\0') continue;
+
+        const lv_image_dsc_t* src = layout_asset_lookup(asset_id);
+        if (src == nullptr) {
+          ESP_LOGW(kTag, "Missing layout asset '%s'", asset_id);
+          continue;
+        }
+
+        int img_w = w > 0 ? w : static_cast<int>(src->header.w);
+        int img_h = h > 0 ? h : static_cast<int>(src->header.h);
+        di.opacity = static_cast<int>(cjson_number(el, "opacity", di.opacity));
+        di.opacity = std::clamp(di.opacity, 0, 255);
+
+        lv_obj_t* img = lv_image_create(dp.page_obj);
+        lv_image_set_src(img, src);
+        lv_obj_set_pos(img, x, y);
+        lv_obj_set_size(img, img_w, img_h);
+        lv_image_set_inner_align(img, LV_IMAGE_ALIGN_STRETCH);
+        lv_obj_set_style_bg_opa(img, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_border_opa(img, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_opa(img, static_cast<lv_opa_t>(di.opacity), LV_PART_MAIN);
+        make_input_pass_through(img);
+        di.obj = img;
       }
     }
   }
@@ -421,15 +496,15 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
 
       if (!dl.field.empty()) {
         if (dl.field == "_wifi") {
-          set_label_text_if_changed(dl.obj,
+          set_dynlabel_text_if_changed(dl,
               snapshot.wifi_connected ? tr("verbunden", "connected")
                                       : tr("getrennt", "disconnected"));
         } else if (dl.field == "_fieldcount") {
-          set_label_text_if_changed(dl.obj,
+          set_dynlabel_text_if_changed(dl,
               std::to_string(snapshot.fields.size()).c_str());
         } else if (dl.field == "_time") {
           if (!time_sync::is_clock_synced()) {
-            set_label_text_if_changed(dl.obj, "--:--");
+            set_dynlabel_text_if_changed(dl, "--:--");
           } else {
             time_t now = 0;
             time(&now);
@@ -437,11 +512,11 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
             localtime_r(&now, &ti);
             char tbuf[16] = {};
             std::strftime(tbuf, sizeof(tbuf), "%H:%M", &ti);
-            set_label_text_if_changed(dl.obj, tbuf);
+            set_dynlabel_text_if_changed(dl, tbuf);
           }
         } else if (dl.field == "_date") {
           if (!time_sync::is_clock_synced()) {
-            set_label_text_if_changed(dl.obj, "--.--.----");
+            set_dynlabel_text_if_changed(dl, "--.--.----");
           } else {
             time_t now = 0;
             time(&now);
@@ -449,7 +524,7 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
             localtime_r(&now, &ti);
             char dbuf[16] = {};
             std::strftime(dbuf, sizeof(dbuf), "%d.%m.%Y", &ti);
-            set_label_text_if_changed(dl.obj, dbuf);
+            set_dynlabel_text_if_changed(dl, dbuf);
           }
         } else if (dl.field == "_battery_icon") {
           const char* icon;
@@ -470,23 +545,23 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
             else if (pct >= 10) icon = "\xF3\xB0\x81\xBA";  // battery-10
             else                icon = "\xF3\xB0\x81\xBA";  // battery-10
           }
-          set_label_text_if_changed(dl.obj, icon);
+          set_dynlabel_text_if_changed(dl, icon);
         } else if (dl.field == "_battery_pct") {
           if (snapshot.device_battery_present) {
             char buf[8] = {};
             std::snprintf(buf, sizeof(buf), "%u%%", snapshot.device_battery_percent);
-            set_label_text_if_changed(dl.obj, buf);
+            set_dynlabel_text_if_changed(dl, buf);
           } else {
-            set_label_text_if_changed(dl.obj, "--");
+            set_dynlabel_text_if_changed(dl, "--");
           }
         } else if (dl.field == "_ip") {
-          set_label_text_if_changed(dl.obj,
+          set_dynlabel_text_if_changed(dl,
               snapshot.wifi_ip.empty() ? "--" : snapshot.wifi_ip.c_str());
         } else if (dl.field == "_ap_ssid") {
-          set_label_text_if_changed(dl.obj,
+          set_dynlabel_text_if_changed(dl,
               snapshot.setup_ap_active ? snapshot.setup_ap_ssid.c_str() : tr("aus", "off"));
         } else if (dl.field == "_uptime") {
-          set_label_text_if_changed(dl.obj,
+          set_dynlabel_text_if_changed(dl,
               snapshot.updated_ms > 0 ? tr("aktiv", "active") : "--");
         } else {
           auto val = snapshot.number_field(dl.field.c_str());
@@ -497,28 +572,22 @@ void LayoutRenderer::update_data(const Msa2Snapshot& snapshot) {
             } else {
               std::snprintf(buf, sizeof(buf), "%.1f%s", *val, dl.suffix.c_str());
             }
-            set_label_text_if_changed(dl.obj, buf);
+            set_dynlabel_text_if_changed(dl, buf);
           } else {
             auto str_val = snapshot.string_field(dl.field.c_str());
             if (str_val.has_value()) {
               std::string text = *str_val + dl.suffix;
-              set_label_text_if_changed(dl.obj, text.c_str());
+              set_dynlabel_text_if_changed(dl, text.c_str());
             } else {
               std::string text = std::string("--") + dl.suffix;
-              set_label_text_if_changed(dl.obj, text.c_str());
+              set_dynlabel_text_if_changed(dl, text.c_str());
             }
           }
         }
       } else if (!dl.setting_key.empty()) {
         // handled in update_settings
       } else {
-        set_label_text_if_changed(dl.obj, translate_static(dl.static_text.c_str()));
-      }
-
-      if (dl.radius > 0) {
-        const char* cur = lv_label_get_text(dl.obj);
-        layout_curved_text(lv_obj_get_parent(dl.obj), dl,
-                           cur, layout_width(), layout_height());
+        set_dynlabel_text_if_changed(dl, translate_static(dl.static_text.c_str()));
       }
     }
 
@@ -559,7 +628,7 @@ void LayoutRenderer::update_settings(const DisplaySettings& settings) {
         }
       }
       if (buf[0] != '\0') {
-        set_label_text_if_changed(dl.obj, buf);
+        set_dynlabel_text_if_changed(dl, buf);
       }
     }
   }
@@ -775,7 +844,7 @@ void LayoutRenderer::wifi_confirm_cb(lv_event_t* event) {
     for (auto& dp : self->pages_) {
       for (auto& dl : dp.labels) {
         if (dl.field == "_wifi" && dl.obj != nullptr) {
-          set_label_text_if_changed(dl.obj, self->tr("Reset...", "Reset..."));
+          set_dynlabel_text_if_changed(dl, self->tr("Reset...", "Reset..."));
         }
       }
     }

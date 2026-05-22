@@ -10,30 +10,6 @@
       "name": "Seite 1",
       "elements": [
         {
-          "id": "el_43",
-          "type": "arc",
-          "x": 0,
-          "y": 0,
-          "w": 466,
-          "h": 466,
-          "strokeWidth": 22,
-          "bgColor": "#1a1a1a",
-          "color": "#00ff00",
-          "field": "soc",
-          "min": 0,
-          "max": 100,
-          "_linkedTo": "el_17",
-          "ringStyle": "dynamic",
-          "colorMode": "threshold",
-          "thresholds": {
-            "high": 60,
-            "mid": 25,
-            "colorHigh": "#00ff00",
-            "colorMid": "#ffa500",
-            "colorLow": "#ff3333"
-          }
-        },
-        {
           "id": "el_16",
           "type": "label",
           "x": 131,
@@ -98,38 +74,6 @@
           "_group": "g_18"
         },
         {
-          "id": "el_49",
-          "type": "label",
-          "x": 272,
-          "y": 405,
-          "text": "--",
-          "fontSize": 28,
-          "fontFamily": "Dosis",
-          "fontWeight": "600",
-          "color": "#ffffff",
-          "anchor": "end",
-          "field": "_time",
-          "suffix": "",
-          "format": "",
-          "_group": "g_47"
-        },
-        {
-          "id": "el_52",
-          "type": "label",
-          "x": 296,
-          "y": 371,
-          "text": "--",
-          "fontSize": 36,
-          "fontFamily": "Dosis",
-          "fontWeight": "600",
-          "color": "#ffffff",
-          "anchor": "end",
-          "field": "_date",
-          "suffix": "",
-          "format": "",
-          "_group": null
-        },
-        {
           "id": "el_63",
           "type": "label",
           "x": 131,
@@ -160,6 +104,25 @@
           "suffix": " W",
           "format": "",
           "_group": "g_62"
+        },
+        {
+          "id": "el_76",
+          "type": "label",
+          "x": 205,
+          "y": 433,
+          "text": "--",
+          "fontSize": 80,
+          "fontFamily": "Dosis",
+          "fontWeight": "600",
+          "color": "#ffffff",
+          "anchor": "end",
+          "field": "_time",
+          "suffix": "",
+          "format": "",
+          "_group": "g_74",
+          "radius": -202,
+          "startAngle": 98,
+          "curveFlip": false
         }
       ]
     },
@@ -385,7 +348,7 @@
       ]
     }
   ],
-  "idCounter": 65,
+  "idCounter": 77,
   "locale": "de",
   "displayDefaults": {
     "brightness": 100,

@@ -18,10 +18,14 @@ struct DynLabel {
   std::string format;
   std::string static_text;
   std::string setting_key;
+  std::string anchor = "start";
   bool is_icon = false;
   int radius = 0;
   int start_angle = 0;
-  std::vector<lv_obj_t*> char_labels;
+  bool curve_flip = false;
+  const lv_font_t* font = nullptr;
+  lv_color_t text_color = lv_color_white();
+  std::string curved_cache;
 };
 
 struct DynArc {
@@ -42,12 +46,19 @@ struct DynArc {
   uint32_t gradient_end = 0x00FF00;
 };
 
+struct DynImage {
+  lv_obj_t* obj = nullptr;
+  std::string asset;
+  int opacity = 255;
+};
+
 struct DynPage {
   std::string name;
   lv_obj_t* page_obj = nullptr;
   lv_obj_t* title_label = nullptr;
   std::vector<DynLabel> labels;
   std::vector<DynArc> arcs;
+  std::vector<DynImage> images;
 };
 
 class LayoutRenderer {

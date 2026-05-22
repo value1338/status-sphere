@@ -9,6 +9,7 @@ idf_component_register(
         "include/font/mdi_30.c"
         "include/font/mdi_40.c"
         "src/layout_renderer.cpp"
+        "src/layout_assets_registry.cpp"
         "src/msa2_status.cpp"
         "src/msa2_status_client.cpp"
         "src/pmu.cpp"

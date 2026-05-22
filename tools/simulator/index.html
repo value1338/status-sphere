@@ -196,6 +196,18 @@ body {
 }
 .display-frame .el:hover { outline: 1px dashed rgba(59,130,246,0.5); }
 .display-frame .el.selected { outline: 2px solid var(--accent); }
+.display-frame .el-curved { outline: none !important; }
+.display-frame .el-curved .curved-hit {
+  background: transparent;
+  box-sizing: border-box;
+}
+.display-frame .el-curved:hover .curved-hit { outline: 1px dashed rgba(59,130,246,0.5); }
+.display-frame .el-curved.selected .curved-hit { outline: 2px solid var(--accent); }
+.display-frame .el-curved .resize-handle {
+  position: absolute;
+  right: auto;
+  bottom: auto;
+}
 .display-frame .el .resize-handle {
   position: absolute;
   right: -4px;
@@ -209,6 +221,17 @@ body {
 }
 .display-frame .el.selected .resize-handle { display: block; }
 .display-frame .el-arc canvas { display: block; }
+.display-frame .el-image {
+  white-space: normal;
+  overflow: hidden;
+}
+.display-frame .el-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+  pointer-events: none;
+}
 
 .flash-bar {
   display: flex;
@@ -422,6 +445,7 @@ body {
     <span style="display:flex;gap:3px">
       <button class="sm-btn btn-green" onclick="addElement()" data-i18n-title="addText" title="Text hinzufügen">+T</button>
       <button class="sm-btn btn-blue" onclick="addArc()" data-i18n-title="addArc" title="Ring hinzufügen">+◌</button>
+      <button class="sm-btn btn-gray" onclick="addImage()" data-i18n-title="addImage" title="Bild hinzufügen">+🖼</button>
     </span>
   </div>
   <div id="layer-list"></div>
@@ -487,7 +511,7 @@ body {
 const I18N = {
   de: {
     pages:'Seiten', addPage:'+ Seite', rename:'Name', duplicate:'Kopie', delete:'Löschen',
-    onDisplay:'Auf Display', addText:'Text hinzufügen', addArc:'Ring hinzufügen',
+    onDisplay:'Auf Display', addText:'Text hinzufügen', addArc:'Ring hinzufügen', addImage:'Bild hinzufügen',
     systemFields:'System-Felder', endpointFields:'Endpoint-Felder',
     load:'Laden', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
     comPort:'COM-Port...', refreshPorts:'Ports aktualisieren', build:'Build', flash:'Flash',
@@ -534,8 +558,8 @@ const I18N = {
     colorGradient:'Gradient (Farbverlauf)', thresholds:'Schwellwerte', below:'darunter',
     gradient:'Gradient', width:'Breite', height:'Höhe', strokeWidth:'Strichbreite',
     min:'Min', max:'Max', ringColor:'Ring-Farbe',
-    textRadius:'Radius', textRadiusHint:'0 = gerade, >0 = am Kreis gebogen (Abstand zur Mitte)',
-    textStartAngle:'Startwinkel',
+    textRadius:'Radius', textRadiusHint:'0 = gerade. Unten wird automatisch gedreht. „Text umdrehen“ = 180° manuell.',
+    textStartAngle:'Startwinkel', curveFlip:'Text umdrehen',
     sf_time:'Uhrzeit', sf_date:'Datum', sf_batteryIcon:'Batterie-Icon', sf_batteryPct:'Batterie %',
     sf_wifi:'WiFi-Status', sf_ip:'IP-Adresse', sf_ap:'Setup-AP SSID', sf_uptime:'Letztes Update',
     sf_fieldcount:'Anzahl Felder',
@@ -552,7 +576,9 @@ const I18N = {
     tpl_power:'Leistung', tpl_voltage:'Spannung', tpl_current:'Strom', tpl_temp:'Temperatur',
     tpl_status:'Status', tpl_freq:'Frequenz', tpl_consumption:'Verbrauch',
     yes:'ja', no:'nein', layerEmpty:'Leer — Felder hierhin ziehen<br>oder Vorlage wählen',
-    ringLayer:'Ring', ent_offline:'offline', ent_invert:'Invert',
+    ringLayer:'Ring', imageLayer:'Bild', propsOpacity:'Deckkraft', replaceImage:'Bild ersetzen',
+    imageMissing:'Bild fehlt — erneut hochladen', imageDropHint:'Bilder per Drag & Drop aufs Display legen',
+    ent_offline:'offline', ent_invert:'Invert',
     ent_sensor_ht:'Temp: --°C  Feuchte: --%',
     alertPorts:'Ports nur über den Python-Server verfügbar.\\nStarte: python tools/editor/server.py',
     alertPortsFail:'Ports laden fehlgeschlagen: ', alertBuild:'Build nur über den Python-Server verfügbar.',
@@ -566,7 +592,7 @@ const I18N = {
   },
   en: {
     pages:'Pages', addPage:'+ Page', rename:'Rename', duplicate:'Copy', delete:'Delete',
-    onDisplay:'On display', addText:'Add text', addArc:'Add ring',
+    onDisplay:'On display', addText:'Add text', addArc:'Add ring', addImage:'Add image',
     systemFields:'System fields', endpointFields:'Endpoint fields',
     load:'Load', stop:'Stop', demo:'Demo', export:'Export', importBtn:'Import',
     comPort:'COM port...', refreshPorts:'Refresh ports', build:'Build', flash:'Flash',
@@ -613,8 +639,8 @@ const I18N = {
     colorGradient:'Gradient', thresholds:'Thresholds', below:'below',
     gradient:'Gradient', width:'Width', height:'Height', strokeWidth:'Stroke width',
     min:'Min', max:'Max', ringColor:'Ring color',
-    textRadius:'Radius', textRadiusHint:'0 = straight, >0 = curved along circle (distance from center)',
-    textStartAngle:'Start angle',
+    textRadius:'Radius', textRadiusHint:'0 = straight. Bottom auto-flips. “Flip text” = manual 180°.',
+    textStartAngle:'Start angle', curveFlip:'Flip text',
     sf_time:'Time', sf_date:'Date', sf_batteryIcon:'Battery icon', sf_batteryPct:'Battery %',
     sf_wifi:'WiFi status', sf_ip:'IP address', sf_ap:'Setup AP SSID', sf_uptime:'Last update',
     sf_fieldcount:'Field count',
@@ -631,7 +657,9 @@ const I18N = {
     tpl_power:'Power', tpl_voltage:'Voltage', tpl_current:'Current', tpl_temp:'Temperature',
     tpl_status:'Status', tpl_freq:'Frequency', tpl_consumption:'Consumption',
     yes:'yes', no:'no', layerEmpty:'Empty — drag fields here<br>or pick a template',
-    ringLayer:'Ring', ent_offline:'offline', ent_invert:'Invert',
+    ringLayer:'Ring', imageLayer:'Image', propsOpacity:'Opacity', replaceImage:'Replace image',
+    imageMissing:'Image missing — upload again', imageDropHint:'Drag & drop images onto the display',
+    ent_offline:'offline', ent_invert:'Invert',
     ent_sensor_ht:'Temp: --°C  Humidity: --%',
     alertPorts:'Ports only via Python server.\\nRun: python tools/editor/server.py',
     alertPortsFail:'Failed to load ports: ', alertBuild:'Build only via Python server.',
@@ -834,6 +862,7 @@ let displayDefaults = {
 };
 
 let pages = [];
+let layoutAssets = {};
 let currentPageIdx = 0;
 let selectedId = null;
 let selectedIds = new Set();
@@ -977,6 +1006,7 @@ function init() {
       const p = JSON.parse(saved);
       pages = p.pages || p;
       idCounter = p.idCounter || 100;
+      layoutAssets = (p.assets && typeof p.assets === 'object') ? p.assets : {};
       if (p.locale === 'en' || p.locale === 'de') lang = p.locale;
       loadLayoutMetaFromObject(p);
     } catch(e) { pages = emptyPages(); }
@@ -991,6 +1021,7 @@ function layoutExportObject() {
   return {
     display: { ...layoutMeta },
     pages,
+    assets: layoutAssets,
     idCounter,
     locale: lang,
     displayDefaults,
@@ -1127,6 +1158,8 @@ function renderLayerList() {
     d.className = 'layer-item'+(el.id===selectedId?' selected':'');
     const lbl = el.type==='arc'
       ? `◌ ${t('ringLayer')} (${el.field||'arc'})`
+      : el.type==='image'
+      ? `🖼 ${(layoutAssets[el.asset]?.name || el.asset || t('imageLayer')).substring(0, 24)}`
       : `T "${elementDisplayText(el).substring(0, 20)}"`;
     const grpIcon = el._group ? '<span title="Gruppiert" style="color:#3b82f6;font-size:10px">🔗</span>' : '';
     d.innerHTML = `<span>${grpIcon}${lbl}</span><span style="display:flex;gap:2px"><button class="del-btn" title="Kopieren" style="color:#3b82f6">⧉</button><button class="del-btn" title="Löschen">✕</button></span>`;
@@ -1225,11 +1258,16 @@ function initDrop() {
   disp.addEventListener('drop', ev => {
     ev.preventDefault();
     disp.classList.remove('drop-hover');
-    const field = ev.dataTransfer.getData('text/plain');
-    if (!field) return;
     const rect = disp.getBoundingClientRect();
     const x = Math.round(ev.clientX - rect.left);
     const y = Math.round(ev.clientY - rect.top);
+    const file = [...(ev.dataTransfer.files || [])].find(f => f.type && f.type.startsWith('image/'));
+    if (file) {
+      insertImageFromFile(file, x, y).catch(e => alert(t('errorPrefix') + (e.message || e)));
+      return;
+    }
+    const field = ev.dataTransfer.getData('text/plain');
+    if (!field) return;
     const gid = 'g_'+(idCounter++);
     const labelEl = makeLabelText(field, x, y, gid);
     const valueEl = makeValueText(field, x, y, gid);
@@ -1466,6 +1504,7 @@ function renderDisplay() {
   }
   curElements().forEach(el => {
     if (el.type==='arc') renderArc(display, el);
+    else if (el.type==='image') renderImage(display, el);
     else renderLabel(display, el);
   });
 }
@@ -1598,11 +1637,170 @@ function previewFontPx(size) {
   return 40;
 }
 
+function curvedArcSpanDeg(el, text, r) {
+  const fontSize = previewFontPx(el.fontSize);
+  const charW = Math.max(8, fontSize * 0.55);
+  const len = Math.max(1, text.length);
+  const anglePerCharDeg = ((charW + 2) / r) * 180 / Math.PI;
+  return Math.min(359, len * anglePerCharDeg);
+}
+
+function curvedPathD(cx, cy, r, startDeg, spanDeg, invert) {
+  const half = spanDeg / 2;
+  const a0 = (startDeg - half) * Math.PI / 180;
+  const a1 = (startDeg + half) * Math.PI / 180;
+  const sx = cx + r * Math.cos(a0);
+  const sy = cy + r * Math.sin(a0);
+  const ex = cx + r * Math.cos(a1);
+  const ey = cy + r * Math.sin(a1);
+  const largeArc = spanDeg > 180 ? 1 : 0;
+  const sweep = invert ? 0 : 1;
+  return `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} ${sweep} ${ex} ${ey}`;
+}
+
+function arcMidpoint(cx, cy, r, startDeg) {
+  const rad = startDeg * Math.PI / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function shouldRotateCurvedText(el, cy) {
+  const atBottom = el.y > cy;
+  // Unten automatisch 180° drehen; Checkbox kehrt das um (auch oben nutzbar).
+  return atBottom !== !!el.curveFlip;
+}
+
+function applyCurvedTextRotation(textEl, el, cx, cy, r, startDeg) {
+  const mid = arcMidpoint(cx, cy, r, startDeg);
+  if (shouldRotateCurvedText(el, cy)) {
+    textEl.setAttribute('transform', `rotate(180 ${mid.x} ${mid.y})`);
+  } else {
+    textEl.removeAttribute('transform');
+  }
+}
+
+function normalizeCurvedRadius(el) {
+  if (!el.radius) return;
+  el.radius = -Math.abs(el.radius);
+}
+
+function buildCurvedSvg(el, text, pathId) {
+  const cx = dispW() / 2;
+  const cy = dispH() / 2;
+  const r = Math.abs(el.radius || 0);
+  if (!r) return null;
+  const invert = true;
+  const fontSize = previewFontPx(el.fontSize);
+  const startDeg = el.startAngle || 0;
+  const spanDeg = curvedArcSpanDeg(el, text, r);
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', dispW());
+  svg.setAttribute('height', dispH());
+
+  const defs = document.createElementNS(ns, 'defs');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('id', pathId);
+  path.setAttribute('d', curvedPathD(cx, cy, r, startDeg, spanDeg, invert));
+  defs.appendChild(path);
+  svg.appendChild(defs);
+
+  const textEl = document.createElementNS(ns, 'text');
+  textEl.setAttribute('font-size', fontSize);
+  textEl.setAttribute('font-family', el.fontFamily || 'system-ui');
+  textEl.setAttribute('font-weight', el.fontWeight || '400');
+  textEl.setAttribute('fill', el.color || '#ffffff');
+  const tp = document.createElementNS(ns, 'textPath');
+  tp.setAttribute('href', '#' + pathId);
+  tp.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#' + pathId);
+  if (el.anchor === 'middle') tp.setAttribute('startOffset', '50%');
+  else if (el.anchor === 'end') tp.setAttribute('startOffset', '100%');
+  tp.setAttribute('text-anchor', el.anchor === 'middle' ? 'middle' : el.anchor === 'end' ? 'end' : 'start');
+  tp.textContent = text;
+  textEl.appendChild(tp);
+  applyCurvedTextRotation(textEl, el, cx, cy, r, startDeg);
+  svg.setAttribute('overflow', 'visible');
+  svg.appendChild(textEl);
+
+  return { svg, path, textEl, cx, cy, r, fontSize, startDeg, spanDeg };
+}
+
+function curvedTextBBox(textEl, displayEl) {
+  if (!textEl) return null;
+  try {
+    if (displayEl) {
+      const tRect = textEl.getBoundingClientRect();
+      const dRect = displayEl.getBoundingClientRect();
+      if (tRect.width > 0 && tRect.height > 0) {
+        return {
+          x: tRect.left - dRect.left,
+          y: tRect.top - dRect.top,
+          width: tRect.width,
+          height: tRect.height,
+        };
+      }
+    }
+    const b = textEl.getBBox();
+    if (b.width > 0 && b.height > 0) return b;
+  } catch (_) {}
+  return null;
+}
+
+function layoutCurvedChrome(wrapper, textEl) {
+  const hit = wrapper.querySelector('.curved-hit');
+  const rh = wrapper.querySelector('.resize-handle');
+  const display = document.getElementById('display');
+  const b = curvedTextBBox(textEl, display);
+  if (!hit || !b) {
+    if (hit) hit.style.display = 'none';
+    return;
+  }
+  const pad = 8;
+  hit.style.display = 'block';
+  hit.style.left = (b.x - pad) + 'px';
+  hit.style.top = (b.y - pad) + 'px';
+  hit.style.width = (b.width + pad * 2) + 'px';
+  hit.style.height = (b.height + pad * 2) + 'px';
+  if (rh) {
+    rh.style.left = (b.x + b.width - 4) + 'px';
+    rh.style.top = (b.y + b.height - 4) + 'px';
+  }
+}
+
+function measureCurvedLabel(el, text) {
+  const built = buildCurvedSvg(el, text, 'measure-curve-' + el.id);
+  if (!built) return null;
+  const { svg, textEl } = built;
+  svg.style.position = 'fixed';
+  svg.style.left = '-10000px';
+  svg.style.top = '0';
+  svg.style.opacity = '0';
+  svg.style.pointerEvents = 'none';
+  document.body.appendChild(svg);
+  const display = document.getElementById('display');
+  const bbox = curvedTextBBox(textEl, display) || {
+    x: dispW() / 2 - 20, y: dispH() / 2 - 10, width: 40, height: 20,
+  };
+  document.body.removeChild(svg);
+  const pad = 6;
+  return {
+    ...built,
+    minX: bbox.x - pad,
+    minY: bbox.y - pad,
+    w: bbox.width + pad * 2,
+    h: bbox.height + pad * 2,
+  };
+}
+
+function curvedLabelMetrics(el, text) {
+  return measureCurvedLabel(el, text);
+}
+
 function renderLabel(parent, el) {
   const text = elementDisplayText(el);
   const rad = el.radius || 0;
 
-  if (rad > 0) {
+  if (rad !== 0) {
     renderCurvedLabel(parent, el, text);
     return;
   }
@@ -1633,70 +1831,84 @@ function renderLabel(parent, el) {
   parent.appendChild(d);
 }
 
-function renderCurvedLabel(parent, el, text) {
+function updateCurvedLabelDom(el, text) {
+  const wrapper = document.querySelector(`#display [data-id="${el.id}"]`);
+  if (!wrapper || !wrapper.classList.contains('el-curved')) {
+    renderDisplay();
+    return;
+  }
+  const svg = wrapper.querySelector('svg');
+  const path = svg?.querySelector('path');
+  const textEl = svg?.querySelector('text');
+  const tp = svg?.querySelector('textPath');
+  if (!svg || !path || !textEl || !tp) {
+    renderDisplay();
+    return;
+  }
   const cx = dispW() / 2;
   const cy = dispH() / 2;
-  const r = el.radius;
-  const fontSize = previewFontPx(el.fontSize);
+  const r = Math.abs(el.radius || 0);
   const startDeg = el.startAngle || 0;
-
-  const wrapper = document.createElement('div');
-  wrapper.className = 'el'+(el.id===selectedId?' selected':'');
-  wrapper.dataset.id = el.id;
-  wrapper.style.position = 'absolute';
-  wrapper.style.left = '0';
-  wrapper.style.top = '0';
-  wrapper.style.width = dispW()+'px';
-  wrapper.style.height = dispH()+'px';
-  wrapper.style.pointerEvents = 'none';
-
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('width', dispW());
-  svg.setAttribute('height', dispH());
-  svg.style.position = 'absolute';
-  svg.style.left = '0';
-  svg.style.top = '0';
-
-  const pathId = 'curve-'+el.id;
-  const defs = document.createElementNS(ns, 'defs');
-  const path = document.createElementNS(ns, 'path');
-  path.setAttribute('id', pathId);
-
-  const sRad = startDeg * Math.PI / 180;
-  const sweepDeg = 180;
-  const eRad = (startDeg + sweepDeg) * Math.PI / 180;
-  const sx = cx + r * Math.cos(sRad);
-  const sy = cy + r * Math.sin(sRad);
-  const ex = cx + r * Math.cos(eRad);
-  const ey = cy + r * Math.sin(eRad);
-  const largeArc = sweepDeg > 180 ? 1 : 0;
-  path.setAttribute('d', `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`);
-  defs.appendChild(path);
-  svg.appendChild(defs);
-
-  const textEl = document.createElementNS(ns, 'text');
-  textEl.setAttribute('font-size', fontSize);
+  const spanDeg = curvedArcSpanDeg(el, text, r);
+  path.setAttribute('d', curvedPathD(cx, cy, r, startDeg, spanDeg, true));
+  textEl.setAttribute('font-size', previewFontPx(el.fontSize));
   textEl.setAttribute('font-family', el.fontFamily || 'system-ui');
   textEl.setAttribute('font-weight', el.fontWeight || '400');
   textEl.setAttribute('fill', el.color || '#ffffff');
-  const tp = document.createElementNS(ns, 'textPath');
-  tp.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#'+pathId);
-  if (el.anchor === 'middle') tp.setAttribute('startOffset', '50%');
-  else if (el.anchor === 'end') tp.setAttribute('startOffset', '100%');
-  tp.setAttribute('text-anchor', el.anchor === 'middle' ? 'middle' : el.anchor === 'end' ? 'end' : 'start');
   tp.textContent = text;
-  textEl.appendChild(tp);
-  svg.appendChild(textEl);
+  applyCurvedTextRotation(textEl, el, cx, cy, r, startDeg);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => layoutCurvedChrome(wrapper, textEl));
+  });
+}
 
+function renderCurvedLabel(parent, el, text) {
+  normalizeCurvedRadius(el);
+  const pathId = 'curve-' + el.id;
+  const built = buildCurvedSvg(el, text, pathId);
+  if (!built) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'el el-curved' + (el.id === selectedId ? ' selected' : '');
+  wrapper.dataset.id = el.id;
+  wrapper.style.left = '0';
+  wrapper.style.top = '0';
+  wrapper.style.width = dispW() + 'px';
+  wrapper.style.height = dispH() + 'px';
+  wrapper.style.overflow = 'visible';
+  wrapper.style.pointerEvents = 'none';
+
+  const { svg, textEl } = built;
+  svg.style.position = 'absolute';
+  svg.style.left = '0';
+  svg.style.top = '0';
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  svg.style.overflow = 'visible';
+  svg.style.pointerEvents = 'none';
   wrapper.appendChild(svg);
 
-  const hitArea = document.createElement('div');
-  hitArea.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:all;cursor:move';
-  wrapper.appendChild(hitArea);
+  const hit = document.createElement('div');
+  hit.className = 'curved-hit';
+  hit.style.position = 'absolute';
+  hit.style.pointerEvents = 'auto';
+  hit.style.cursor = 'move';
+  wrapper.appendChild(hit);
 
-  hitArea.addEventListener('pointerdown', ev => selectElement(el.id, ev));
+  const rh = document.createElement('div');
+  rh.className = 'resize-handle';
+  rh.style.pointerEvents = 'auto';
+  wrapper.appendChild(rh);
+
+  setupCurvedDrag(hit, el);
+  setupCurvedLabelResize(rh, el);
+  hit.addEventListener('pointerdown', ev => {
+    if (!ev.target.classList.contains('resize-handle')) selectElement(el.id, ev);
+  });
   parent.appendChild(wrapper);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => layoutCurvedChrome(wrapper, textEl));
+  });
 }
 
 function resolveField(el) {
@@ -1870,6 +2082,102 @@ function getGroupSiblings(el) {
   return curElements().filter(e => e._group===el._group && e.id!==el.id);
 }
 
+function pointerOnDisplay(ev) {
+  const display = document.getElementById('display');
+  const rect = display.getBoundingClientRect();
+  const px = ev.clientX - rect.left;
+  const py = ev.clientY - rect.top;
+  const cx = dispW() / 2;
+  const cy = dispH() / 2;
+  const dx = px - cx;
+  const dy = py - cy;
+  return {
+    px, py, cx, cy,
+    angle: Math.atan2(dy, dx) * 180 / Math.PI,
+    radius: Math.hypot(dx, dy),
+  };
+}
+
+function syncCurvedPolarFromXY(el) {
+  const r = el.radius || 0;
+  if (!r) return;
+  const cx = dispW() / 2;
+  const cy = dispH() / 2;
+  const dx = el.x - cx;
+  const dy = el.y - cy;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 10) return;
+  el.startAngle = Math.round(Math.atan2(dy, dx) * 180 / Math.PI);
+  const mag = Math.abs(r) >= 20 ? Math.abs(r) : Math.round(dist);
+  el.radius = -mag;
+}
+
+function setupCurvedDrag(div, el) {
+  let dragging = false;
+  let grabAngle = 0;
+
+  div.addEventListener('pointerdown', ev => {
+    if (ev.target.classList.contains('resize-handle')) return;
+    selectElement(el.id, ev);
+    dragging = true;
+    const p = pointerOnDisplay(ev);
+    grabAngle = p.angle - (el.startAngle || 0);
+    div.setPointerCapture(ev.pointerId);
+    ev.stopPropagation();
+  });
+  div.addEventListener('pointermove', ev => {
+    if (!dragging) return;
+    const p = pointerOnDisplay(ev);
+    el.startAngle = Math.round(p.angle - grabAngle);
+    const mag = Math.max(20, Math.min(300, Math.round(p.radius)));
+    el.radius = -mag;
+    const mid = (el.startAngle || 0) * Math.PI / 180;
+    el.x = Math.round(p.cx + mag * Math.cos(mid));
+    el.y = Math.round(p.cy + mag * Math.sin(mid));
+    updateCurvedLabelDom(el, elementDisplayText(el));
+    const pRadius = document.getElementById('p-radius');
+    const pAngle = document.getElementById('p-angle');
+    if (pRadius) pRadius.value = Math.abs(el.radius);
+    if (pAngle) pAngle.value = el.startAngle;
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    save();
+    updateProps();
+  };
+  div.addEventListener('pointerup', end);
+  div.addEventListener('lostpointercapture', end);
+}
+
+function setupCurvedLabelResize(h, el) {
+  let resizing = false;
+  let startY = 0;
+  let startFs = 0;
+  h.addEventListener('pointerdown', ev => {
+    resizing = true;
+    startY = ev.clientY;
+    startFs = el.fontSize || 16;
+    h.setPointerCapture(ev.pointerId);
+    ev.stopPropagation();
+  });
+  h.addEventListener('pointermove', ev => {
+    if (!resizing) return;
+    el.fontSize = Math.max(8, Math.min(80, Math.round(startFs + (ev.clientY - startY) * 0.5)));
+    updateCurvedLabelDom(el, elementDisplayText(el));
+    const pFs = document.getElementById('p-fs');
+    if (pFs) pFs.value = el.fontSize;
+  });
+  const end = () => {
+    if (!resizing) return;
+    resizing = false;
+    save();
+    updateProps();
+  };
+  h.addEventListener('pointerup', end);
+  h.addEventListener('lostpointercapture', end);
+}
+
 function setupDrag(div, el) {
   let sx,sy,ox,oy,dr=false,siblingOffsets=[];
   const display=document.getElementById('display');
@@ -2030,6 +2338,126 @@ function addArc() {
   selectElement(el.id);
 }
 
+function assetSrc(assetId) {
+  if (!assetId) return '';
+  const a = layoutAssets[assetId];
+  if (a) {
+    if (a.dataUrl) return a.dataUrl;
+    if (a.data && a.mime) return `data:${a.mime};base64,${a.data}`;
+    if (a.data) return `data:image/png;base64,${a.data}`;
+  }
+  if (isFlaskServer) return `/api/assets/${encodeURIComponent(assetId)}`;
+  return '';
+}
+
+function pickImageFile() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/png,image/jpeg,image/jpg,image/webp,image/gif,image/bmp,image/*';
+    inp.onchange = () => resolve(inp.files && inp.files[0] ? inp.files[0] : null);
+    inp.click();
+  });
+}
+
+function readFileAsAsset(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const comma = dataUrl.indexOf(',');
+      const data = comma >= 0 ? dataUrl.slice(comma + 1) : '';
+      const img = new Image();
+      img.onload = () => resolve({
+        name: file.name,
+        mime: file.type || 'image/png',
+        data,
+        dataUrl,
+        srcW: img.naturalWidth,
+        srcH: img.naturalHeight,
+      });
+      img.onerror = () => reject(new Error('invalid image'));
+      img.src = dataUrl;
+    };
+    reader.onerror = () => reject(reader.error || new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function insertImageFromFile(file, x, y) {
+  const meta = await readFileAsAsset(file);
+  const assetId = 'img_' + (idCounter++);
+  layoutAssets[assetId] = meta;
+  const defW = Math.min(160, meta.srcW || 120);
+  const ratio = meta.srcW ? (meta.srcH / meta.srcW) : 1;
+  const defH = Math.max(24, Math.round(defW * ratio));
+  const el = {
+    id: uid(), type: 'image', asset: assetId,
+    x: x != null ? x : Math.round(dispW() / 2 - defW / 2),
+    y: y != null ? y : Math.round(dispH() / 2 - defH / 2),
+    w: defW, h: defH, opacity: 255,
+  };
+  curElements().push(el);
+  save(); renderDisplay(); renderLayerList();
+  selectElement(el.id);
+}
+
+async function addImage() {
+  const file = await pickImageFile();
+  if (!file) return;
+  try {
+    await insertImageFromFile(file);
+  } catch (e) {
+    alert(t('errorPrefix') + (e.message || e));
+  }
+}
+
+async function replaceSelectedImageAsset() {
+  if (!selectedId) return;
+  const el = findEl(selectedId);
+  if (!el || el.type !== 'image' || !el.asset) return;
+  const file = await pickImageFile();
+  if (!file) return;
+  try {
+    const meta = await readFileAsAsset(file);
+    layoutAssets[el.asset] = meta;
+    save(); renderDisplay(); renderLayerList(); renderProps();
+  } catch (e) {
+    alert(t('errorPrefix') + (e.message || e));
+  }
+}
+
+function renderImage(parent, el) {
+  const w = document.createElement('div');
+  w.className = 'el el-image' + (el.id === selectedId ? ' selected' : '');
+  w.dataset.id = el.id;
+  w.style.left = el.x + 'px';
+  w.style.top = el.y + 'px';
+  w.style.width = el.w + 'px';
+  w.style.height = el.h + 'px';
+
+  const img = document.createElement('img');
+  img.alt = '';
+  img.draggable = false;
+  const src = assetSrc(el.asset);
+  if (src) img.src = src;
+  img.style.opacity = ((el.opacity ?? 255) / 255).toString();
+  w.appendChild(img);
+
+  const rh = document.createElement('div');
+  rh.className = 'resize-handle';
+  w.appendChild(rh);
+
+  setupDrag(w, el);
+  setupResize(rh, el, () => {
+    img.style.opacity = ((el.opacity ?? 255) / 255).toString();
+  });
+  w.addEventListener('pointerdown', ev => {
+    if (!ev.target.classList.contains('resize-handle')) selectElement(el.id, ev);
+  });
+  parent.appendChild(w);
+}
+
 /* ── Properties ── */
 function renderProps() {
   const panel = document.getElementById('props-panel');
@@ -2083,9 +2511,14 @@ function renderProps() {
     </div></div>`;
     h += centerAlignButtonsHtml();
     h += `<div class="prop-group"><div class="prop-row">
-      <div><label>${t('textRadius')}</label><input id="p-radius" type="number" value="${el.radius||0}" min="0" max="300"></div>
+      <div><label>${t('textRadius')}</label><input id="p-radius" type="number" value="${Math.abs(el.radius||0)}" min="20" max="300"></div>
       <div><label>${t('textStartAngle')}</label><input id="p-angle" type="number" value="${el.startAngle||0}" step="1"></div>
-    </div><div style="font-size:10px;color:#475569;margin-top:4px">${t('textRadiusHint')}</div></div>`;
+    </div><div style="font-size:10px;color:#475569;margin-top:4px">${t('textRadiusHint')}</div>
+    ${(el.radius||0)!==0?`<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;cursor:pointer">
+      <input type="checkbox" id="p-curve-flip" ${el.curveFlip?'checked':''} style="width:auto;margin:0">
+      ${t('curveFlip')}
+    </label>`:''}
+    </div>`;
     const pageLabelYs = curElements().filter(e => e.type === 'label').map(e => e.y).sort((a, b) => a - b);
     const pageStep = detectRowStep(pageLabelYs);
     if (pageStep != null) {
@@ -2190,6 +2623,25 @@ function renderProps() {
         <div style="height:12px;border-radius:4px;background:linear-gradient(to right,${el.gradientStart||'#ff3333'},${el.gradientEnd||'#00ff00'})"></div>
       </div>`;
     }
+  } else if (el.type==='image') {
+    const asset = layoutAssets[el.asset];
+    const src = assetSrc(el.asset);
+    h += `<div class="prop-group"><label>${t('imageLayer')}</label>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${esc(asset?.name || el.asset || t('imageMissing'))}</div>
+      ${src ? `<img src="${src}" alt="" style="max-width:100%;max-height:120px;display:block;margin-bottom:8px;border-radius:4px">` : `<div style="font-size:11px;color:#f59e0b;margin-bottom:8px">${t('imageMissing')}</div>`}
+      <button type="button" class="sm-btn btn-blue" style="width:100%;padding:6px;font-size:11px" onclick="replaceSelectedImageAsset()">${t('replaceImage')}</button>
+    </div>`;
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>X</label><input id="p-x" type="number" value="${el.x}"></div>
+      <div><label>Y</label><input id="p-y" type="number" value="${el.y}"></div></div></div>`;
+    h += centerAlignButtonsHtml();
+    h += `<div class="prop-group"><div class="prop-row">
+      <div><label>${t('width')}</label><input id="p-w" type="number" value="${el.w}" min="8"></div>
+      <div><label>${t('height')}</label><input id="p-h" type="number" value="${el.h}" min="8"></div></div></div>`;
+    h += pg(t('propsOpacity'), `<input id="p-opacity" type="range" min="0" max="255" value="${el.opacity ?? 255}">`);
+    if (asset?.srcW) {
+      h += `<div style="font-size:10px;color:#475569;margin:8px 14px">${asset.srcW}×${asset.srcH}px · PNG/JPG/WebP/GIF/BMP</div>`;
+    }
   }
 
   panel.innerHTML = h;
@@ -2197,6 +2649,8 @@ function renderProps() {
     if (inp.id==='p-ring'||inp.id==='p-group') return;
     inp.addEventListener('input',()=>applyProps(el));
   });
+  const flipCb = document.getElementById('p-curve-flip');
+  if (flipCb) flipCb.addEventListener('change', () => applyProps(el));
   const fs=document.getElementById('p-field'), fc=document.getElementById('p-field_c');
   if (fs&&fc) fs.addEventListener('change',()=>{ fc.value=fs.value; applyProps(el); });
 
@@ -2282,9 +2736,24 @@ function applyProps(el) {
   const n=id=>{const e=document.getElementById(id);return e?Number(e.value):undefined};
   const fld=()=>{const c=v('p-field_c'),s=v('p-field');return(c!==undefined&&c!=='')?c:(s??el.field);};
   if (el.type==='label') {
+    const prevX = el.x, prevY = el.y, prevRadius = el.radius || 0;
     el.text=v('p-text')??el.text; el.field=fld(); el.suffix=v('p-suffix')??el.suffix;
     el.x=n('p-x')??el.x; el.y=n('p-y')??el.y;
-    el.radius=n('p-radius')??el.radius??0; el.startAngle=n('p-angle')??el.startAngle??0;
+    const radIn = n('p-radius');
+    if (radIn !== undefined) el.radius = radIn === 0 ? 0 : -Math.abs(radIn);
+    el.startAngle=n('p-angle')??el.startAngle??0;
+    el.curveFlip = !!document.getElementById('p-curve-flip')?.checked;
+    if (el.radius && (!prevRadius || el.x !== prevX || el.y !== prevY)) {
+      syncCurvedPolarFromXY(el);
+    } else if (el.radius) {
+      normalizeCurvedRadius(el);
+    }
+    if (el.radius) {
+      const pRadius = document.getElementById('p-radius');
+      const pAngle = document.getElementById('p-angle');
+      if (pRadius) pRadius.value = Math.abs(el.radius);
+      if (pAngle) pAngle.value = el.startAngle;
+    }
     el.fontSize=n('p-fs')??el.fontSize; el.fontFamily=v('p-ff')??el.fontFamily;
     el.fontWeight=v('p-fw')??el.fontWeight; el.color=v('p-color')??el.color;
     el.anchor=v('p-anchor')??el.anchor; el.format=v('p-fmt')??el.format;
@@ -2322,6 +2791,12 @@ function applyProps(el) {
       el.gradientStart=v('p-gr-start')??el.gradientStart??'#ff3333';
       el.gradientEnd=v('p-gr-end')??el.gradientEnd??'#00ff00';
     }
+  } else if (el.type==='image') {
+    el.x=n('p-x')??el.x; el.y=n('p-y')??el.y;
+    el.w=Math.max(8, n('p-w')??el.w);
+    el.h=Math.max(8, n('p-h')??el.h);
+    const op = n('p-opacity');
+    if (op !== undefined) el.opacity = Math.max(0, Math.min(255, op));
   }
   save(); renderDisplay(); renderLayerList();
 }
@@ -2534,6 +3009,7 @@ function importLayout() {
     try {
       const d=JSON.parse(await inp.files[0].text());
       pages=d.pages||d; idCounter=d.idCounter||100;
+      layoutAssets = (d.assets && typeof d.assets === 'object') ? d.assets : {};
       if (d.locale==='en'||d.locale==='de') lang=d.locale;
       if (d.displayDefaults) displayDefaults={...displayDefaults,...d.displayDefaults};
       loadLayoutMetaFromObject(d);
